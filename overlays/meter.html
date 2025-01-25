@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <title>Audio Meter via WebSocket</title>
+  <style>
+    body {
+      background: #111;
+      color: #ddd;
+      font-family: sans-serif;
+    }
+
+    #container {
+      width: 50px;
+      height: 300px;
+      background: #333;
+      margin: 50px auto;
+      border-radius: 5px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    #bar {
+      position: absolute;
+      bottom: 0;
+      width: 100%;
+      background: limegreen;
+      height: 0%;
+      /* Use a short transition to smooth out the jump */
+      transition: height 0.05s ease-in-out;
+    }
+
+    .status {
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <h2 style="text-align:center;">Audio Meter via WebSocket</h2>
+  <div id="container">
+    <div id="bar"></div>
+  </div>
+  <div class="status">
+    <p id="msg">Connecting...</p>
+  </div>
+
+  <script>
+    const bar = document.getElementById('bar');
+    const msg = document.getElementById('msg');
+
+    // Connect to our local WebSocket server
+    const socket = new WebSocket('ws://localhost:5678');
+
+    socket.onopen = () => {
+      msg.textContent = "Connected!";
+    };
+    socket.onmessage = event => {
+      const data = JSON.parse(event.data);
+      const amplitude = data.amplitude; // 0.0 -> 1.0
+      // Convert amplitude to a percentage for the bar's height
+      const percent = amplitude * 100;
+      bar.style.height = percent + '%';
+    };
+    socket.onerror = () => {
+      msg.textContent = "WebSocket error.";
+    };
+    socket.onclose = () => {
+      msg.textContent = "WebSocket closed.";
+    };
+  </script>
+</body>
+
+</html>

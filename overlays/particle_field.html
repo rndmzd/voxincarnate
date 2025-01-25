@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>Particle Field</title>
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            background: #111;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+            /* remove scrollbars */
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="particleCanvas"></canvas>
+    <script>
+        // Setup canvas
+        const canvas = document.getElementById('particleCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // Keep track of amplitude
+        let amplitude = 0;
+
+        // A simple Particle class
+        class Particle {
+            constructor(x, y, angle, radius) {
+                this.cx = x;      // center x
+                this.cy = y;      // center y
+                this.angle = angle;  // direction in radians
+                this.baseRadius = radius;
+            }
+            draw(ctx) {
+                // The distance of the particle from center depends on amplitude
+                const ampFactor = 150 * amplitude;
+                const r = this.baseRadius + ampFactor;
+                const px = this.cx + Math.cos(this.angle) * r;
+                const py = this.cy + Math.sin(this.angle) * r;
+
+                // Example: draw a small circle
+                ctx.beginPath();
+                ctx.arc(px, py, 3, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(0,255,180,0.8)';
+                ctx.fill();
+            }
+        }
+
+        // Generate some random particles
+        const particles = [];
+        const numParticles = 200;
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+        for (let i = 0; i < numParticles; i++) {
+            const angle = Math.random() * 2 * Math.PI;
+            const radius = 20 + Math.random() * 80;
+            particles.push(new Particle(centerX, centerY, angle, radius));
+        }
+
+        function animate() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // Optionally add a tinted background so trails appear
+            // ctx.fillStyle = 'rgba(17,17,17, 0.15)';
+            // ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            for (const p of particles) {
+                p.draw(ctx);
+            }
+            requestAnimationFrame(animate);
+        }
+        animate();
+
+        // Listen to resizing
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+
+        // Connect to the WebSocket for amplitude
+        const ws = new WebSocket('ws://localhost:5678');
+        ws.onmessage = event => {
+            const data = JSON.parse(event.data);
+            amplitude = data.amplitude; // store so we can read it each frame
+        };
+    </script>
+</body>
+
+</html>

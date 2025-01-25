@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>Siri-Style Waves</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            position: relative;
+        }
+
+        .wave {
+            position: absolute;
+            background: rgba(0, 255, 180, 0.2);
+            border-radius: 50%;
+            transition: all 0.1s ease;
+        }
+
+        /* We'll have three waves with different base sizes and colors */
+        #wave1 {
+            background: rgba(0, 255, 180, 0.1);
+        }
+
+        #wave2 {
+            background: rgba(0, 255, 180, 0.2);
+        }
+
+        #wave3 {
+            background: rgba(0, 255, 180, 0.3);
+        }
+    </style>
+</head>
+
+<body>
+    <div id="wave1" class="wave"></div>
+    <div id="wave2" class="wave"></div>
+    <div id="wave3" class="wave"></div>
+
+    <script>
+        const ws = new WebSocket('ws://localhost:5678');
+        const w1 = document.getElementById('wave1');
+        const w2 = document.getElementById('wave2');
+        const w3 = document.getElementById('wave3');
+
+        // Position them roughly center
+        function updateWave(waveElem, baseSize, amplitude, scaleFactor) {
+            const size = baseSize + scaleFactor * amplitude;
+            // Center them by subtracting half of new size from the center
+            const half = size / 2;
+            waveElem.style.width = size + 'px';
+            waveElem.style.height = size + 'px';
+            waveElem.style.left = `calc(50% - ${half}px)`;
+            waveElem.style.top = `calc(50% - ${half}px)`;
+        }
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            const amp = data.amplitude; // 0.0–1.0
+
+            // Tweak base sizes & scale factors for each wave
+            updateWave(w1, 100, amp, 100);
+            updateWave(w2, 140, amp, 120);
+            updateWave(w3, 180, amp, 150);
+        };
+    </script>
+</body>
+
+</html>

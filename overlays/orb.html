@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>Futuristic AI Orb</title>
+    <style>
+        body {
+            background: #111;
+            color: #ddd;
+            font-family: sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            /* center orb horizontally */
+            justify-content: center;
+            align-items: center;
+            /* center orb vertically */
+            height: 100vh;
+            /* full browser height */
+            overflow: hidden;
+        }
+
+        #orb {
+            /* Start with a moderate size (in px) */
+            width: 100px;
+            height: 100px;
+            /* make it round */
+            border-radius: 50%;
+            /* a base color or gradient */
+            background: radial-gradient(circle at center, rgba(0, 255, 200, 0.8), rgba(0, 150, 255, 0.4));
+            /* optional initial glow */
+            box-shadow: 0 0 30px rgba(0, 255, 200, 0.3),
+                0 0 60px rgba(0, 150, 255, 0.2);
+            transition: all 0.07s ease-out;
+            /* slight border or additional styling if you like */
+        }
+
+        .status {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 14px;
+            color: #0f0;
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- The expanding orb -->
+    <div id="orb"></div>
+
+    <!-- Status messages (connected/error, etc.) -->
+    <div class="status">
+        <p id="msg">Connecting...</p>
+    </div>
+
+    <script>
+        const orb = document.getElementById('orb');
+        const msg = document.getElementById('msg');
+
+        // WebSocket to your Python server
+        const socket = new WebSocket('ws://localhost:5678');
+
+        socket.onopen = () => {
+            msg.textContent = "Connected!";
+        };
+
+        socket.onmessage = event => {
+            const data = JSON.parse(event.data);
+            const amplitude = data.amplitude;  // 0.0 to 1.0
+
+            // We'll define a minimum diameter and maximum diameter, so the orb
+            // never vanishes entirely or overwhelms the screen. Tweak these as desired.
+            const minDiameter = 50;  // px
+            const maxDiameter = 300; // px
+
+            // Interpolate orb size between these extremes
+            const diameter = minDiameter + (maxDiameter - minDiameter) * amplitude;
+            orb.style.width = diameter + 'px';
+            orb.style.height = diameter + 'px';
+
+            // Optionally, we can also intensify the glow or color as amplitude grows:
+            const glowStrength = 30 + 60 * amplitude; // base 30, up to ~90
+            orb.style.boxShadow =
+                `0 0 ${glowStrength}px rgba(0,255,200,0.3),
+         0 0 ${glowStrength * 2}px rgba(0,150,255,0.2)`;
+        };
+
+        socket.onerror = () => {
+            msg.textContent = "WebSocket error!";
+        };
+
+        socket.onclose = () => {
+            msg.textContent = "WebSocket closed.";
+        };
+    </script>
+
+</body>
+
+</html>

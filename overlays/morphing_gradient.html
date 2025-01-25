@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>Morphing Gradient Demo</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        #gradientOrb {
+            width: 200px;
+            height: 200px;
+            border-radius: 50%;
+            /* Start with a conic gradient */
+            background: conic-gradient(from 0deg,
+                    rgba(0, 255, 150, 1) 0%,
+                    rgba(0, 50, 255, 1) 100%);
+            transition: all 0.1s ease;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="gradientOrb"></div>
+
+    <script>
+        // Connect to your amplitude WebSocket
+        const ws = new WebSocket('ws://localhost:5678');
+        const orb = document.getElementById('gradientOrb');
+
+        ws.onmessage = event => {
+            const data = JSON.parse(event.data);
+            const amplitude = data.amplitude; // 0.0 -> 1.0
+
+            // For example, rotate the gradient based on amplitude
+            // We'll rotate from 0deg to 360deg
+            const rotation = Math.floor(360 * amplitude);
+
+            // Optionally shift color stops or add more interesting transitions
+            // Simple approach: let's just set the conic gradient's starting angle
+            const gradient = `conic-gradient(
+        from ${rotation}deg,
+        rgba(0,255,150,1) 0%,
+        rgba(0,50,255,1) 100%
+      )`;
+
+            orb.style.background = gradient;
+
+            // We can also scale the orb (like in the circle approach)
+            const minSize = 100;
+            const maxSize = 300;
+            const size = minSize + (maxSize - minSize) * amplitude;
+            orb.style.width = size + 'px';
+            orb.style.height = size + 'px';
+        };
+    </script>
+</body>
+
+</html>

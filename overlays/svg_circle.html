@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>SVG Circle Animation</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+    </style>
+</head>
+
+<body>
+    <svg id="mySvg" width="500" height="500">
+        <!-- A circle in the center of the 500x500 viewport -->
+        <circle id="myCircle" cx="250" cy="250" r="50" fill="none" stroke="#0ff" stroke-width="3" />
+    </svg>
+
+    <script>
+        const ws = new WebSocket('ws://localhost:5678');
+        const circle = document.getElementById('myCircle');
+
+        ws.onmessage = event => {
+            const data = JSON.parse(event.data);
+            const amp = data.amplitude; // 0.0 - 1.0
+
+            // For a bigger "pulse", map amplitude to radius
+            const minRadius = 50;
+            const maxRadius = 200;
+            const newRadius = minRadius + (maxRadius - minRadius) * amp;
+            circle.setAttribute('r', newRadius);
+
+            // Optionally adjust stroke or color
+            const strokeWidth = 3 + (amp * 6);
+            circle.setAttribute('stroke-width', strokeWidth);
+
+            // Example color shift from cyan to magenta:
+            // (convert amplitude to a hue angle, just for fun)
+            // Let's say hue from 180 to 300
+            const hue = 180 + 120 * amp;
+            const color = `hsl(${hue}, 100%, 50%)`;
+            circle.setAttribute('stroke', color);
+        };
+    </script>
+</body>
+
+</html>

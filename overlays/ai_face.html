@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>p5 Face with Audio Amplitude</title>
+    <!-- Include p5.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.6.0/lib/p5.js"></script>
+</head>
+
+<body>
+
+    <script>
+        // -----------------------------
+        // GLOBALS
+        // -----------------------------
+        let amplitude = 0;          // Will come from the WebSocket server
+        let socket;                 // The WebSocket
+        let blinkStartFrame = 0;    // Framecount when blink started
+        let isBlinking = false;
+        let blinkDuration = 10;     // frames that eyes stay closed
+
+        // For dynamic "pointer" used by the eyes:
+        let eyeTargetX, eyeTargetY;
+        let eyeVelX, eyeVelY;
+
+        // For slight random eye rolling offsets
+        let randomOffsetAngle = 0;
+
+        // Next time (in frames) when we randomly trigger a blink
+        let nextBlinkFrame = 60;
+
+        // We'll do simple "facial expression" color changes
+        // The face color might become more intense with amplitude
+        let baseColor = { r: 0, g: 0, b: 255 };  // Set base color to blue
+
+        // -----------------------------
+        // SETUP
+        // -----------------------------
+        function setup() {
+            let canvas = createCanvas(400, 400);
+            canvas.style('background-color', 'transparent');
+            angleMode(DEGREES);
+            clear();  // Start with a transparent canvas
+
+            // 1) Initialize invisible eye target
+            eyeTargetX = random(width);
+            eyeTargetY = random(height);
+            eyeVelX = random(-1.5, 1.5);
+            eyeVelY = random(-1.5, 1.5);
+
+            // 2) Connect to your local Python WebSocket server
+            socket = new WebSocket('ws://localhost:5678');
+            socket.onmessage = (event) => {
+                // Expect a JSON object { "amplitude": someFloat }
+                let data = JSON.parse(event.data);
+                amplitude = data.amplitude || 0;
+            };
+
+            // Plan the first blink a bit in the future
+            nextBlinkFrame = frameCount + int(random(60, 180));
+        }
+
+        // -----------------------------
+        // DRAW
+        // -----------------------------
+        function draw() {
+            clear();  // Clear with transparency instead of using background()
+
+            // 1) Eye target movement
+            moveEyePointer();
+
+            // 2) Check if we should blink
+            handleBlink();
+
+            // 3) Draw the face (eyes + mouth + expression)
+            drawFace();
+        }
+
+        // ---------------------------------------
+        // FACE DRAWING
+        // ---------------------------------------
+        function drawFace() {
+            // We'll do some color logic for "facial expression."
+            // If amplitude is high, we shift the color or brightness, for instance.
+            let ampScale = constrain(amplitude, 0, 1);
+            let faceR = lerp(baseColor.r, 255, ampScale);
+            let faceG = lerp(baseColor.g, 0, ampScale);
+            let faceB = lerp(baseColor.b, 255, ampScale);
+
+            push();
+            translate(width / 2, height / 2);
+
+            // Draw a large ellipse as a "face color backdrop"
+            noStroke();
+            fill(faceR, faceG, faceB, 255);
+            ellipse(0, 0, 300, 300);
+            pop();
+
+            // For convenience, define positions for left & right eyes and mouth
+            let leftEyeX = 150;
+            let leftEyeY = 180;
+            let rightEyeX = 250;
+            let rightEyeY = 180;
+            let mouthY = 280;
+
+            // EYES
+            drawEye(leftEyeX, leftEyeY, isBlinking);
+            drawEye(rightEyeX, rightEyeY, isBlinking);
+
+            // MOUTH
+            drawMouth(mouthY, amplitude);
+        }
+
+        // ---------------------------------------
+        // DRAWING THE EYES
+        // ---------------------------------------
+        function drawEye(eyeX, eyeY, closed) {
+            let scleraSize = 50;  // Outer eye
+            let pupilSize = 25;
+
+            // If blinking, just draw a line
+            if (closed) {
+                stroke(255);
+                strokeWeight(3);
+                line(eyeX - scleraSize / 4, eyeY, eyeX + scleraSize / 4, eyeY);
+                return;
+            }
+
+            // Otherwise, we "aim" the pupil at the invisible pointer (eyeTargetX, eyeTargetY)
+            // Angle
+            let angle = atan2(eyeTargetY - eyeY, eyeTargetX - eyeX);
+
+            // Sclera
+            noStroke();
+            fill(255);
+            ellipse(eyeX, eyeY, scleraSize, scleraSize);
+
+            // Pupil
+            push();
+            translate(eyeX, eyeY);
+            rotate(angle + randomOffsetAngle);
+
+            fill(0);
+            // pupil offset from center
+            ellipse(scleraSize * 0.25, 0, pupilSize, pupilSize);
+            pop();
+        }
+
+        // ---------------------------------------
+        // DRAWING THE MOUTH (Wavy line, amplitude-based)
+        // ---------------------------------------
+        function drawMouth(mouthCenterY, amp) {
+            // The mouth is a sine wave from x=150 to x=250
+            // We'll scale amplitude so the wave's amplitude is higher with bigger audio amplitude
+            let waveAmplitude = 40 * amp; // up to ~40 
+            let waveSpeed = 1000;
+
+            stroke(0);
+            noFill();
+
+            beginShape();
+            for (let x = 150; x <= 250; x += 5) {
+                let yOffset = sin(x + frameCount * waveSpeed) * waveAmplitude;
+                vertex(x, mouthCenterY + yOffset);
+            }
+            endShape();
+        }
+
+        // ---------------------------------------
+        // RANDOM EYE BLINKING
+        // ---------------------------------------
+        function handleBlink() {
+            // If we're not blinking, check if it's time to blink
+            if (!isBlinking) {
+                if (frameCount >= nextBlinkFrame) {
+                    // Start a blink
+                    isBlinking = true;
+                    blinkStartFrame = frameCount;
+                }
+            } else {
+                // If we are blinking, see if blink has ended
+                if (frameCount - blinkStartFrame >= blinkDuration) {
+                    // Blink done
+                    isBlinking = false;
+                    // Schedule the next blink in a random time
+                    nextBlinkFrame = frameCount + int(random(60, 180));
+                }
+            }
+        }
+
+        // ---------------------------------------
+        // DYNAMIC EYE ROLLING & INVISIBLE POINTER
+        // ---------------------------------------
+        function moveEyePointer() {
+            // The eye target bounces around like before
+            eyeTargetX += eyeVelX;
+            eyeTargetY += eyeVelY;
+
+            // Bounce off edges
+            if (eyeTargetX < 0) {
+                eyeTargetX = 0;
+                eyeVelX *= -1;
+            } else if (eyeTargetX > width) {
+                eyeTargetX = width;
+                eyeVelX *= -1;
+            }
+            if (eyeTargetY < 0) {
+                eyeTargetY = 0;
+                eyeVelY *= -1;
+            } else if (eyeTargetY > height) {
+                eyeTargetY = height;
+                eyeVelY *= -1;
+            }
+
+            // Optionally add slight random angle offset to pupil to get a rolling effect
+            // This just wanders slowly
+            randomOffsetAngle += random(-0.2, 0.2);
+            // clamp or let it drift? We'll let it drift but not go too big
+            randomOffsetAngle = constrain(randomOffsetAngle, -10, 10);
+        }
+    </script>
+</body>
+
+</html>
