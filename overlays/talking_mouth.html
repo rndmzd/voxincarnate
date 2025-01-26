@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Talking Mouth Overlay</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: transparent;
+        }
+        #mouth-container {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        #mouth-image {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+    </style>
+</head>
+<body>
+    <div id="mouth-container">
+        <img id="mouth-image" src="" alt="Mouth">
+    </div>
+
+    <script>
+        const AUDIO_THRESHOLD = 0.3; // Adjust this threshold as needed
+        let closedMouthImages = [];
+        let openMouthImages = [];
+        let currentState = 'closed';
+
+        // Function to get a random image from an array
+        function getRandomImage(images) {
+            return images[Math.floor(Math.random() * images.length)];
+        }
+
+        // Function to update the displayed image
+        function updateMouthImage(state) {
+            if (state === currentState) return;
+            
+            currentState = state;
+            const images = state === 'open' ? openMouthImages : closedMouthImages;
+            if (images.length > 0) {
+                document.getElementById('mouth-image').src = getRandomImage(images);
+            }
+        }
+
+        // Load images from directories
+        async function loadImages() {
+            try {
+                closedMouthImages = [
+                    'mouth_closed/1.png',
+                    'mouth_closed/2.png',
+                    'mouth_closed/3.png',
+                ];
+                
+                openMouthImages = [
+                    'mouth_open/1.png',
+                    'mouth_open/2.png',
+                    'mouth_open/3.png',
+                    'mouth_open/4.png',
+                ];
+
+                // Set initial image
+                updateMouthImage('closed');
+            } catch (error) {
+                console.error('Error loading images:', error);
+            }
+        }
+
+        // Connect to WebSocket
+        const ws = new WebSocket('ws://localhost:5678');
+
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            const amplitude = data.amplitude;
+            
+            updateMouthImage(amplitude > AUDIO_THRESHOLD ? 'open' : 'closed');
+        };
+
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+        };
+
+        ws.onclose = function() {
+            console.log('WebSocket connection closed');
+            // Attempt to reconnect after a delay
+            setTimeout(() => {
+                window.location.reload();
+            }, 5000);
+        };
+
+        // Load images when the page loads
+        loadImages();
+    </script>
+</body>
+</html> 

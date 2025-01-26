@@ -169,14 +169,18 @@ async def broadcast_amplitude(monitor):
         amplitude = monitor.get_level()
         data = {"amplitude": amplitude}
         remove_sockets = []
-        for ws in connected_clients:
+        
+        # Create a copy of the set for safe iteration
+        for ws in set(connected_clients):
             try:
                 await ws.send(json.dumps(data))
             except:
                 remove_sockets.append(ws)
+                
         # Remove any dead connections
         for ws in remove_sockets:
-            connected_clients.remove(ws)
+            if ws in connected_clients:  # Check if still present
+                connected_clients.remove(ws)
 
         # 20 times per second is plenty smooth; you can raise if you want it snappier
         await asyncio.sleep(0.05)
