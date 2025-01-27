@@ -15,62 +15,105 @@
             display: flex;
             justify-content: center;
             align-items: center;
+            position: relative;
         }
-        #mouth-image {
+        .mouth-image {
             max-width: 100%;
             max-height: 100%;
             object-fit: contain;
+            position: absolute;
+            display: none;
+        }
+        .visible {
+            display: block;
         }
     </style>
 </head>
 <body>
     <div id="mouth-container">
-        <img id="mouth-image" src="" alt="Mouth">
+        <!-- Images will be added here dynamically -->
     </div>
 
     <script>
         const AUDIO_THRESHOLD = 0.3; // Adjust this threshold as needed
-        let closedMouthImages = [];
-        let openMouthImages = [];
         let currentState = 'closed';
+        let lastImageUpdate = 0;
+        let previousAmplitude = 0;
+        const MIN_IMAGE_UPDATE_INTERVAL = 100; // Minimum time between image changes in milliseconds
+        
+        let closedMouthElements = [];
+        let openMouthElements = [];
+        let currentVisibleImage = null;
 
-        // Function to get a random image from an array
-        function getRandomImage(images) {
-            return images[Math.floor(Math.random() * images.length)];
+        // Function to get a random element from an array
+        function getRandomElement(elements) {
+            return elements[Math.floor(Math.random() * elements.length)];
         }
 
         // Function to update the displayed image
         function updateMouthImage(state) {
-            if (state === currentState) return;
+            const now = Date.now();
+            
+            // Only update if state changed and enough time has passed
+            if (state === currentState || now - lastImageUpdate < MIN_IMAGE_UPDATE_INTERVAL) {
+                return;
+            }
             
             currentState = state;
-            const images = state === 'open' ? openMouthImages : closedMouthImages;
-            if (images.length > 0) {
-                document.getElementById('mouth-image').src = getRandomImage(images);
+            const elements = state === 'open' ? openMouthElements : closedMouthElements;
+            
+            if (elements.length > 0) {
+                // Hide current image if one is visible
+                if (currentVisibleImage) {
+                    currentVisibleImage.classList.remove('visible');
+                }
+                
+                // Show new random image
+                currentVisibleImage = getRandomElement(elements);
+                currentVisibleImage.classList.add('visible');
+                lastImageUpdate = now;
             }
         }
 
-        // Load images from directories
+        // Load and preload images
         async function loadImages() {
-            try {
-                closedMouthImages = [
-                    'mouth_closed/1.png',
-                    'mouth_closed/2.png',
-                    'mouth_closed/3.png',
-                ];
-                
-                openMouthImages = [
-                    'mouth_open/1.png',
-                    'mouth_open/2.png',
-                    'mouth_open/3.png',
-                    'mouth_open/4.png',
-                ];
+            const container = document.getElementById('mouth-container');
+            
+            const closedPaths = [
+                'mouth_closed/1.png',
+                'mouth_closed/2.png',
+                'mouth_closed/3.png',
+            ];
+            
+            const openPaths = [
+                'mouth_open/1.png',
+                'mouth_open/2.png',
+                'mouth_open/3.png',
+                'mouth_open/4.png',
+            ];
 
-                // Set initial image
-                updateMouthImage('closed');
-            } catch (error) {
-                console.error('Error loading images:', error);
-            }
+            // Create and add closed mouth images
+            closedPaths.forEach(path => {
+                const img = document.createElement('img');
+                img.src = path;
+                img.className = 'mouth-image';
+                img.alt = 'Closed Mouth';
+                container.appendChild(img);
+                closedMouthElements.push(img);
+            });
+
+            // Create and add open mouth images
+            openPaths.forEach(path => {
+                const img = document.createElement('img');
+                img.src = path;
+                img.className = 'mouth-image';
+                img.alt = 'Open Mouth';
+                container.appendChild(img);
+                openMouthElements.push(img);
+            });
+
+            // Set initial image
+            updateMouthImage('closed');
         }
 
         // Connect to WebSocket
@@ -80,7 +123,16 @@
             const data = JSON.parse(event.data);
             const amplitude = data.amplitude;
             
-            updateMouthImage(amplitude > AUDIO_THRESHOLD ? 'open' : 'closed');
+            // Check if we've crossed the threshold in either direction
+            const wasAboveThreshold = previousAmplitude > AUDIO_THRESHOLD;
+            const isAboveThreshold = amplitude > AUDIO_THRESHOLD;
+            
+            // Only update if we've crossed the threshold
+            if (wasAboveThreshold !== isAboveThreshold) {
+                updateMouthImage(isAboveThreshold ? 'open' : 'closed');
+            }
+            
+            previousAmplitude = amplitude;
         };
 
         ws.onerror = function(error) {

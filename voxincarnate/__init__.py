@@ -1,3 +1,3 @@
-from .voxincarnate import main
+from .voxincarnate import start_monitor
 
-__all__ = ['main']
+__all__ = ['start_monitor']
