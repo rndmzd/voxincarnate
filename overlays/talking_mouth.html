@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Talking Mouth Overlay</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: transparent;
+        }
+        #mouth-container {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            position: relative;
+        }
+        .mouth-image {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            position: absolute;
+            display: none;
+        }
+        .visible {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div id="mouth-container">
+        <!-- Images will be added here dynamically -->
+    </div>
+
+    <script>
+        const AUDIO_THRESHOLD = 0.3; // Adjust this threshold as needed
+        let currentState = 'closed';
+        let lastImageUpdate = 0;
+        let previousAmplitude = 0;
+        const MIN_IMAGE_UPDATE_INTERVAL = 100; // Minimum time between image changes in milliseconds
+        
+        let closedMouthElements = [];
+        let openMouthElements = [];
+        let currentVisibleImage = null;
+
+        // Function to get a random element from an array
+        function getRandomElement(elements) {
+            return elements[Math.floor(Math.random() * elements.length)];
+        }
+
+        // Function to update the displayed image
+        function updateMouthImage(state) {
+            const now = Date.now();
+            
+            // Only update if state changed and enough time has passed
+            if (state === currentState || now - lastImageUpdate < MIN_IMAGE_UPDATE_INTERVAL) {
+                return;
+            }
+            
+            currentState = state;
+            const elements = state === 'open' ? openMouthElements : closedMouthElements;
+            
+            if (elements.length > 0) {
+                // Hide current image if one is visible
+                if (currentVisibleImage) {
+                    currentVisibleImage.classList.remove('visible');
+                }
+                
+                // Show new random image
+                currentVisibleImage = getRandomElement(elements);
+                currentVisibleImage.classList.add('visible');
+                lastImageUpdate = now;
+            }
+        }
+
+        // Load and preload images
+        async function loadImages() {
+            const container = document.getElementById('mouth-container');
+            
+            const closedPaths = [
+                'mouth_closed/1.png',
+                'mouth_closed/2.png',
+                'mouth_closed/3.png',
+            ];
+            
+            const openPaths = [
+                'mouth_open/1.png',
+                'mouth_open/2.png',
+                'mouth_open/3.png',
+                'mouth_open/4.png',
+            ];
+
+            // Create and add closed mouth images
+            closedPaths.forEach(path => {
+                const img = document.createElement('img');
+                img.src = path;
+                img.className = 'mouth-image';
+                img.alt = 'Closed Mouth';
+                container.appendChild(img);
+                closedMouthElements.push(img);
+            });
+
+            // Create and add open mouth images
+            openPaths.forEach(path => {
+                const img = document.createElement('img');
+                img.src = path;
+                img.className = 'mouth-image';
+                img.alt = 'Open Mouth';
+                container.appendChild(img);
+                openMouthElements.push(img);
+            });
+
+            // Set initial image
+            updateMouthImage('closed');
+        }
+
+        // Connect to WebSocket
+        const ws = new WebSocket('ws://localhost:5678');
+
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            const amplitude = data.amplitude;
+            
+            // Check if we've crossed the threshold in either direction
+            const wasAboveThreshold = previousAmplitude > AUDIO_THRESHOLD;
+            const isAboveThreshold = amplitude > AUDIO_THRESHOLD;
+            
+            // Only update if we've crossed the threshold
+            if (wasAboveThreshold !== isAboveThreshold) {
+                updateMouthImage(isAboveThreshold ? 'open' : 'closed');
+            }
+            
+            previousAmplitude = amplitude;
+        };
+
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+        };
+
+        ws.onclose = function() {
+            console.log('WebSocket connection closed');
+            // Attempt to reconnect after a delay
+            setTimeout(() => {
+                window.location.reload();
+            }, 5000);
+        };
+
+        // Load images when the page loads
+        loadImages();
+    </script>
+</body>
+</html> 
