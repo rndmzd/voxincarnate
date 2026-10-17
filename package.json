@@ -1,7 +1,7 @@
 {
   "name": "voxincarnate",
   "productName": "Voxincarnate",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "A Windows talking-avatar studio with isolated assistant browser audio and transparent OBS output.",
   "author": "Voxincarnate contributors",
   "license": "MIT",
@@ -51,6 +51,14 @@
       "README.md"
     ],
     "extraResources": [
+      {
+        "from": "artwork/viseme-demo",
+        "to": "artwork/viseme-demo",
+        "filter": [
+          "*.png",
+          "README.md"
+        ]
+      },
       {
         "from": "overlays",
         "to": "legacy-artwork",

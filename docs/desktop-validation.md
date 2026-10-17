@@ -1,5 +1,190 @@
 # Windows desktop validation
 
+## October 16 face detection and natural speech blending
+
+Imported-image creation now detects a face with two associated eyes and a nested
+mouth, rejecting uncertain or inconsistent landmarks. Both regions are displayed
+for review before generating artwork, and can be edited manually. Mouth mode is
+the default; optional face mode permits subtle cheek and brow expressions within
+the selected face.
+
+Speech uploads a square context repeated in a fixed nine-cell template plus a
+matching PNG mask. This preserves the input framing instead of stretching a tight
+mouth crop. Local composition uses a broad elliptical feather and robust, bounded
+perimeter color matching. Every byte outside the selected region and the original
+alpha remain unchanged; X/rest is restored from the exact original. Face selections
+may cover up to 65% for portraits; mouth selections remain limited to 25%.
+
+- `npm run check` passes strict TypeScript, **123 tests**, and the production build.
+  Regressions cover guitar-height/out-of-face mouths, missing/inverted eyes,
+  uncertain detection, mask geometry, portrait bounds including outward pixel
+  rounding, lighting seams on textured skin, alpha and immutable body pixels.
+- The full native Electron smoke run passed overall, including the legacy viseme
+  flow and character creation. It exercised explicit face detection review,
+  manual mouth selection, optional face expressions, all nine decoded speech
+  poses, save/reload, and the existing motion controls. All API calls used local
+  fixtures; **zero paid API requests** were made.
+- Native pixel comparisons verified all nine mouth-mode images outside the mouth
+  and face-mode images outside the face against their original source. Rest was
+  exact in both modes. The face/mouth review and four manual fields were visually
+  inspected at desktop and minimum window sizes without clipping or overflow.
+- Independent source review found and fixed portrait rounding and floating-point
+  containment edge cases; independent screenshot review approved the new controls.
+
+Real detection on the user's guitar character, live generated facial quality,
+and a new physical OBS recording remain **NOT RUN**. Existing characters need
+regeneration from their original reference to receive these speech improvements.
+The normal profile and its existing artwork were preserved.
+
+## October 16 direction, entrance effects, and protected mouth edits
+
+The source now defaults new walking kits to right-edge entry (moving left) and
+right-edge exit (moving right). Creation exposes independent effects and edges
+before any generation. Playback uses decoded alpha bounds, sprite transforms,
+and the actual viewport; the studio no longer clips travel to an inset character
+canvas. Existing explicit clip settings are retained.
+
+Smoke appearance/disappearance and falling/bouncing in followed by jumping out
+use the resting artwork. Saved gait frames remain available when switching back
+to walking, but local effects never cycle them. Only walking effects request
+generated walking artwork.
+
+Speech now sends a selected mouth crop to the image model and composites patches
+locally. Vision can find the region, or the user can draw/edit it. The source
+canvas, alpha, and pixels outside the region are preserved, including textured
+body pixels; X/rest is the original. Older generated sets are retained and need
+regeneration from the original reference to receive this behavior.
+
+- `npm run check` passed TypeScript, **113 tests**, and the production build.
+  Coverage includes bounds/edge contact on wide and portrait viewports, direction
+  mirroring, all effect timelines and serialized OBS factories, strict storage,
+  cropped API uploads, and exact outside-region pixel preservation. Premultiplied
+  translucent pixel blending has separate coverage.
+  Entry specifically uses the first gait frame's visible bounds; exit uses that
+  walking clip's union. Wider original/mouth artwork cannot create a travel gap.
+- The native character-creation fixture passed direction/default controls,
+  automatic and manual mouth selection, all nine decoded speech frames, exact
+  source pixel comparisons outside the region, unchanged X/rest, saved reload,
+  local smoke and fall/jump entrance/exit completion, and ordered OBS presence IPC.
+  These are synthetic fixture checks, with zero paid API requests.
+- A kit created with smoke entrance and fall/jump exit retained all eleven speech
+  mappings, zero motion frames, selected effects and durations through reload,
+  with **zero walking API requests**. Manual mouth selection was inspected at
+  desktop and minimum window sizes; all four numeric fields remained visible,
+  with no horizontal overflow. The final full native rerun passed its overall,
+  legacy viseme, character-creation, and local-effect subchecks.
+- Pixel measurement in Electron uses narrowly scoped CORS for authenticated managed
+  image GET/HEAD requests from the local studio's `file://`/opaque origins. Overlay
+  pages and WebSockets retain their origin restrictions; foreign origins and wrong
+  tokens are tested as denied.
+- The earlier legacy viseme screenshot subcheck intermittently returned
+  `UnknownVizError`. Screenshot retries are bounded, and the smoke aggregator now
+  marks a returned failed subcheck as a failed overall run instead of reporting a
+  false pass. Individual subcheck results remain the evidence for each run.
+
+The test profile is still `.qa/profile`. The normal user profile, live website
+session, and existing saved artwork were not used for these checks. Real generated
+mouth-patch quality and a new physical OBS recording remain **NOT RUN**. The
+character-creation smoke command below also exercises the new paths.
+
+## October 16 character creation suite checkpoint
+
+The source now includes a single-image creation suite, optional OpenAI concept
+and source-image generation, nine speech mouth shapes with binary fallbacks, and
+separate walk-in/walk-out sprite clips. Generated output opens as an unsaved draft
+for review. This checkpoint does not update the previously packaged release.
+
+- `npm run check` passed strict TypeScript, 90 automated tests, and the production
+  renderer/main/preload build. Coverage includes mocked OpenAI request formats,
+  cancellation, timeouts, billing-safe no-retry behavior, sanitized errors, invalid
+  output, managed motion assets, and shared studio/OBS motion timelines.
+- Electron smoke with the existing prerecorded synthetic speech fixture and
+  `--character-suite-check` passed. Its deterministic API substitute made **zero
+  paid requests** and exercised the real UI, preload, IPC, atlas splitting, asset
+  staging, saving, and reload for both image and description creation routes.
+- All nine distinct fixture mouth PNGs decoded and displayed with transparent
+  corners. Both local walking previews completed: exit stayed hidden and entry
+  returned to its anchor. Each saved suite retained 19 distinct sprite mappings,
+  including two four-frame walking clips. Real presence IPC acknowledged ordered
+  OBS exit/entry commands. Overlay tests separately exercised serialized renderer
+  motion, wide-canvas travel, stale audio, disconnects, and presence isolation.
+- Creator screenshots were inspected at normal and minimum desktop sizes. The
+  minimum window had no horizontal overflow; the primary generation action and
+  sticky save control remained available. Image input, generated builder, and
+  walking endpoint captures were inspected. Fixture drawings demonstrate software
+  behavior, not model artwork quality.
+
+The normal user profile was not opened or changed. Reports and screenshots remain
+under the ignored `.qa/` directory: `.qa/smoke.json` (including `characterCreation`)
+and `.qa/character-*.png`. The initial plain-tone fake-microphone smoke did not
+produce timestamped classifier output; the full rerun with synthetic speech passed.
+
+**NOT RUN:** paid OpenAI API calls, visual consistency/semantic correctness of
+real generated sprite sheets, actual OBS recording of the new walking clips,
+fresh-install validation, packaging, or release publication for this suite.
+
+Reproduce the completed check:
+
+```powershell
+npm run check
+$speechFixturePath = (Resolve-Path .qa\lip-sync-speech.wav).Path
+node node_modules/electron/cli.js . --smoke-test --character-suite-check --speech-fixture-check "--use-file-for-fake-audio-capture=$speechFixturePath"
+```
+
+If the fixture file is absent, create it with
+`.\scripts\generate-lip-sync-fixture.ps1`. The character-suite fixture is enabled
+only with the smoke flags and isolated test profile; normal generation uses OpenAI.
+
+## October 16 lip-sync implementation checkpoint
+
+The local source and newly built `release/win-unpacked/Voxincarnate.exe` now include
+the nine-pose lip-sync mode. These checks cover this implementation; the October 15
+Sesame call below predates it and does not validate the new classifier's accuracy.
+
+- `npm run check` passed strict TypeScript checking, **69 tests**, and the production build.
+- `npm run pack` produced the Windows x64 unpacked application. The bundled model,
+  worklet, third-party notices, and all nine demo drawings were verified in the package.
+- The packaged executable passed the isolated fake-input smoke with an original
+  Windows Zira speech fixture. During an eight-second sample, 242 timestamped
+  articulation updates included eight dominant poses (A/B/C/D/E/F/H/X). This proves
+  execution and variation through the real renderer/preload/IPC path, not phoneme accuracy.
+- The production UI added the demo through its real action, rendered all nine
+  assigned images, retained mappings through binary/viseme mode switches and reload,
+  and displayed the closed fallback when X artwork was removed. Screenshots at
+  1440 by 960 and 1120 by 740 were visually inspected; labels, pose controls, and
+  sticky Save were readable, without horizontal overflow.
+- The actual authenticated OBS overlay page in sandboxed Chromium rendered all
+  nine poses at 600 by 600, retained zero corner alpha for each, interrupted an
+  opening with a closure, and returned to rest on Stop. Rendered PNGs were inspected.
+  This is browser-source renderer evidence, not a new recording made in OBS itself.
+- A separate packaged tab-only smoke, with no fake media or physical microphone,
+  retained visible/hidden capture isolation from unrelated audio and reached
+  sustained silence. It also passed the pose UI and overlay rendering checks.
+- Regression coverage includes v1 migration/backups, partial and invalid mappings,
+  missing/failed images, out-of-order audio clocks, model failures, late cancellation,
+  source loss, silence, live sensitivity settings, and gain-recovered quiet audio
+  through the actual vendored classifier.
+
+The checks use `.qa/profile`; the normal user profile was not opened or changed.
+Reports and screenshots are ignored local artifacts in `.qa/smoke.json`,
+`.qa/smoke-tab.json`, `.qa/viseme-*.png`, and `.qa/obs-viseme-*.png`. The speech fixture
+was synthesized directly to a file, without recording a person or playing it aloud.
+
+**NOT RUN for the new mode:** a live Sesame speech-quality comparison, independent
+listening, an actual OBS audiovisual recording with measured offset, clean-machine
+installation, and installer/ZIP release publication. Assistant playback has no added
+sync delay. The model is approximate and has not been calibrated for Sesame voices.
+
+To reproduce the speech fixture check from source:
+
+```powershell
+npm run check
+.\scripts\generate-lip-sync-fixture.ps1
+$speechFixturePath = (Resolve-Path .qa\lip-sync-speech.wav).Path
+node node_modules/electron/cli.js . --smoke-test --speech-fixture-check "--use-file-for-fake-audio-capture=$speechFixturePath"
+node node_modules/electron/cli.js . --smoke-test --tab-capture-only
+```
+
 Validation checkpoints on October 15, 2026, from the `iz` working tree. Target: Windows 11 x64, Electron 44.7.2, Node.js 24.12.0. This record distinguishes automated and synthetic checks, the completed live Sesame/OBS test, and remaining installation and compatibility checks.
 
 ## Completed checks
@@ -83,6 +268,22 @@ To include the read-only Sesame welcome check, add `--sesame-page-check` to the 
 The fake microphone flag can affect Chromium display-audio capture as well. Consequently the fake-microphone process deliberately skips tab isolation. The tab-only process refuses fake media and never opens a physical microphone. Do not combine the two results into a claim of physical-device validation.
 
 The smoke renderer uses software offscreen rendering. Chromium sandboxing remains enabled. Codex's Windows process sandbox prevented the Electron runtime from starting normally, so the desktop tests ran outside that outer process sandbox, against repository-local test profiles.
+
+## Character deletion validation (2026-10-16)
+
+`npm run check` passed TypeScript, all 132 automated tests, and the production build. Deletion tests cover persisted active-character fallback, final-character protection, concurrent deletion, failed writes preserving artwork, cleanup failures, revoked image access, and connected overlays clearing their images and smoke without reconnecting or restoring pending image decodes.
+
+After building, `node node_modules/electron/cli.js . --smoke-test --character-delete-check` passed the real renderer/preload/IPC flow in the separate `.qa/character-delete-profile` profile. It verified cancellation, preservation of unsaved character/settings edits when deleting another character, active-character replacement and editor reset, persistence after reload, and final-character protection in both UI and IPC. The test removed only its temporary characters and restored the initial settings. The rendered library and trash controls were inspected in `.qa/deletion-ui.png`; the report is `.qa/character-deletion.json`.
+
+This check used no paid generation requests or physical audio. Connected-source deletion was verified with local WebSocket and generated-renderer tests; a live OBS application deletion check was not run.
+
+## Version 0.3.0 release validation (2026-10-16)
+
+`npm run dist` passed strict TypeScript checking, all 134 automated tests, the production build, and Windows x64 NSIS/ZIP packaging. The added gait regressions verify proportional fitting, transparent padding, and consistent bottom-center frame placement for portrait and landscape canvases. Legacy Python sources passed `python -m compileall -q voxincarnate`; no Python audio runtime check was performed.
+
+The packaged `release/win-unpacked/Voxincarnate.exe` passed deletion UI/IPC checks, tab-only assistant-audio isolation, nine-pose UI and transparent-overlay rendering, and the complete character-creation suite using deterministic local API fixtures. Creation verified source-preserving mouth/face edits, all nine poses, saved/reloaded image and motion mappings, walking, smoke and fall/jump previews, and ordered OBS presence commands. These runs made zero paid API requests and opened no physical microphone. Reports are `.qa/packaged-0.3.0-character-deletion.json`, `.qa/packaged-0.3.0-tab.json`, and `.qa/packaged-0.3.0-character-suite.json`.
+
+All 14 compiled files in the packaged archive matched the production build byte-for-byte; the nine demo PNGs also matched their sources, and the bundled inference assets and third-party notices were present. The ZIP's application archive matched that tested unpacked package. The executable reports product version 0.3.0.0. Distribution assets are `Voxincarnate-0.3.0-x64.exe`, `Voxincarnate-0.3.0-x64.zip`, and `SHA256SUMS.txt`. The executable and installer are unsigned. A normally running app was left open; isolated smoke profiles temporarily used a free overlay port instead of its occupied default port.
 
 ## Not run
 

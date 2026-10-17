@@ -1,0 +1,73 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "broadcast_fps": 30
+  },
+  "characters": [
+    {
+      "id": "assistant_a",
+      "audio_device": "VoiceMeeter Input (VB-Audio VoiceMeeter VAIO)",
+      "loopback": true,
+      "threshold": 0.02,
+      "attack_ms": 45,
+      "release_ms": 140,
+      "block_size": 2048,
+      "overlay": {
+        "label": "Assistant A",
+        "sprites": {
+          "open": [
+            "mouth_open/1.png",
+            "mouth_open/2.png",
+            "mouth_open/3.png",
+            "mouth_open/4.png"
+          ],
+          "closed": [
+            "mouth_closed/1.png",
+            "mouth_closed/2.png",
+            "mouth_closed/3.png"
+          ]
+        },
+        "idle_swap_ms": 1800,
+        "layout": {
+          "mode": "absolute",
+          "left": "30%",
+          "bottom": "5%",
+          "width": "32vw"
+        }
+      }
+    },
+    {
+      "id": "assistant_b",
+      "audio_device": "VoiceMeeter AUX Input (VB-Audio VoiceMeeter AUX)",
+      "loopback": true,
+      "threshold": 0.02,
+      "attack_ms": 45,
+      "release_ms": 140,
+      "block_size": 2048,
+      "overlay": {
+        "label": "Assistant B",
+        "sprites": {
+          "open": [
+            "mouth_open/1.png",
+            "mouth_open/2.png",
+            "mouth_open/3.png",
+            "mouth_open/4.png"
+          ],
+          "closed": [
+            "mouth_closed/1.png",
+            "mouth_closed/2.png",
+            "mouth_closed/3.png"
+          ]
+        },
+        "idle_swap_ms": 2000,
+        "layout": {
+          "mode": "absolute",
+          "right": "30%",
+          "bottom": "5%",
+          "width": "32vw"
+        }
+      }
+    }
+  ]
+}
