@@ -1,7 +1,7 @@
 {
   "name": "voxincarnate",
   "productName": "Voxincarnate",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "A Windows talking-avatar studio with isolated assistant browser audio and transparent OBS output.",
   "author": "Voxincarnate contributors",
   "license": "MIT",

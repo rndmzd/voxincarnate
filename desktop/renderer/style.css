@@ -9,3 +9,22 @@
 .creator-speech{padding:0;border:0;margin:16px 0 0;min-width:0}.creator-speech legend{font-size:13px;font-weight:600;color:#d8e6e2;margin-bottom:11px}.creator-speech select{margin-top:7px}.mouth-region>.segmented{display:flex;flex-wrap:wrap;width:fit-content;max-width:100%}.mouth-region>.segmented button{min-height:32px;flex:1;white-space:nowrap}.region-targets{display:flex;align-items:center;gap:5px;margin-top:12px;color:var(--muted);font-size:11px}.region-targets>span{margin-right:6px}.region-targets button{padding:6px 9px;font-size:11px;color:#afc3c7;font-weight:500}.region-targets button.active{background:#2c4148;color:#e6f7f0}.region-targets i{width:8px;height:8px;border:1px solid currentColor;display:inline-block}.mouth-key{color:var(--accent)}.face-key{color:#b1c9ff}.region-outline{background:transparent;box-shadow:none;border-width:1px}.region-outline.selected{border-width:2px}.mouth-outline{border-color:var(--accent)}.face-outline{border-color:#b1c9ff;border-style:dashed}.region-outline.selected{box-shadow:0 0 0 2000px rgba(8,15,20,.25)}.region-outline>span{position:absolute;left:-1px;bottom:100%;font-size:9px;line-height:1.4;padding:1px 4px;background:#102a23;color:#c9f3e4;white-space:nowrap}.face-outline>span{background:#1b2b43;color:#d4e2ff}.region-surface{isolation:isolate}.region-surface .face-outline{z-index:1}.region-surface .mouth-outline{z-index:2}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
 .character-row{display:flex;align-items:center;gap:2px;margin-bottom:5px}.character-row .character-item{flex:1;min-width:0;margin-bottom:0}.character-item>span:last-child{min-width:0;flex:1}.delete-character{width:32px;min-height:40px;flex-shrink:0;color:var(--muted)}.delete-character:hover:not(:disabled){color:#ffd0d0;background:#4a2c33}.library-help{font-size:11px;line-height:1.6;color:var(--muted);padding:0 8px}
+
+.character-workspace{min-width:0;container-type:inline-size}
+.character-row{flex-wrap:wrap}
+.character-actions{display:flex;flex-direction:column;flex-shrink:0}
+.rename-character,.character-actions .delete-character{width:32px;min-height:32px;color:var(--muted)}
+.rename-character:hover:not(:disabled),.rename-character[aria-expanded=true]{color:var(--accent)}
+.character-rename{flex-basis:100%;min-width:0;padding:4px 8px 12px}
+.character-rename label{font-size:11px}
+.character-rename input{margin-top:6px;font-size:12px;padding:8px}
+.rename-actions{display:flex;gap:6px;margin-top:9px}
+.rename-actions button{min-height:32px;padding:7px 9px;font-size:11px}
+.rename-error{font-size:11px;color:#ffbcaf;margin-top:7px;overflow-wrap:anywhere}
+.workspace.editing .stage{height:clamp(240px,35vh,360px);min-height:240px}
+@container(max-width:680px){
+  .character-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .animation-setting{grid-template-columns:minmax(0,1fr);gap:10px}
+  .entrance-options{grid-template-columns:minmax(0,1fr);gap:18px}
+  .pose-status{grid-template-columns:repeat(2,minmax(0,1fr))}
+}

@@ -269,6 +269,67 @@ test('discarding failed generation removes only an unsaved draft and rejects sav
   await f.store.discardCharacterDraft(draftId);
 });
 
+test('renames active and inactive characters without changing artwork, IDs, animation or settings, and persists through restart', async t => {
+  const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const initial = await f.store.load(); const second = await addCharacter(f.store);
+  const [viseme, entrance] = await f.store.importImageBuffers(second.id, [{ name: 'A.png', png }, { name: 'enter.png', png }]);
+  await f.store.saveCharacter({ ...second, width: 800, frameMs: 120, animationMode: 'viseme', visemes: { A: [viseme] }, motions: { enter: { frames: [entrance], frameMs: 150, durationMs: 2000, side: 'left' } } });
+  await f.store.saveSettings({ ...initial.settings, mode: 'browser', inputId: 'microphone', detector: { ...initial.settings.detector, gain: 2 } });
+  const before = f.store.snapshot(); const assetPaths = before.characters.flatMap(character => characterSprites(character).map(sprite => f.store.assetPath(character.id, sprite.file)!));
+  const assetContents = await Promise.all(assetPaths.map(filename => fs.readFile(filename)));
+  const inactive = await f.store.renameCharacter(second.id, '  Renamed inactive · 信号  ');
+  const expected = structuredClone(before); expected.characters[1].name = 'Renamed inactive · 信号';
+  assert.deepEqual(inactive, expected); assert.deepEqual(await new LibraryStore(f.store.dataDir, f.legacy).load(), expected);
+  const active = await f.store.renameCharacter(initial.characters[0].id, 'Renamed active');
+  expected.characters[0].name = 'Renamed active';
+  assert.deepEqual(active, expected); assert.deepEqual(await new LibraryStore(f.store.dataDir, f.legacy).load(), expected);
+  assert.deepEqual(await Promise.all(assetPaths.map(filename => fs.readFile(filename))), assetContents);
+  active.characters[0].name = 'Snapshot mutation'; assert.equal(f.store.snapshot().characters[0].name, 'Renamed active');
+});
+
+test('rejects malformed or missing rename targets and invalid names without changing saved data or artwork', async t => {
+  const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const initial = await f.store.load(); const saved = initial.characters[0]; const original = await fs.readFile(f.store.filename, 'utf8');
+  for (const id of ['../outside', '', undefined, [saved.id]]) await assert.rejects(f.store.renameCharacter(id as never, 'New name'), /UUID/);
+  await assert.rejects(f.store.renameCharacter(randomUUID(), 'New name'), /does not exist/);
+  for (const name of ['', '   ', undefined, null, 42, ['Name'], 'x'.repeat(121), 'Line\nbreak', 'Tab\tname', 'Null\u0000name']) {
+    await assert.rejects(f.store.renameCharacter(saved.id, name as never), /Character name is invalid/);
+  }
+  assert.deepEqual(f.store.snapshot(), initial); assert.equal(await fs.readFile(f.store.filename, 'utf8'), original);
+  for (const sprite of characterSprites(saved)) assert.ok(f.store.assetPath(saved.id, sprite.file));
+  const renamed = await f.store.renameCharacter(saved.id, 'x'.repeat(120));
+  assert.equal(renamed.characters[0].name.length, 120); assert.deepEqual(renamed.settings, initial.settings);
+});
+
+test('serializes renames with concurrent character and settings saves so names and other edits are retained', async t => {
+  const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const initial = await f.store.load(); const second = await addCharacter(f.store);
+  const edited = structuredClone(initial.characters[0]); edited.closed[0].x = 27; edited.height = 700;
+  await Promise.all([
+    f.store.saveCharacter(edited),
+    f.store.renameCharacter(edited.id, 'Active renamed'),
+    f.store.renameCharacter(second.id, 'Inactive renamed'),
+    f.store.saveSettings({ ...initial.settings, mode: 'browser' })
+  ]);
+  const saved = f.store.snapshot(); assert.deepEqual(saved.characters, [{ ...edited, name: 'Active renamed' }, { ...second, name: 'Inactive renamed' }]);
+  assert.deepEqual(saved.settings, { ...initial.settings, mode: 'browser' });
+  assert.deepEqual(await new LibraryStore(f.store.dataDir, f.legacy).load(), saved);
+});
+
+test('a failed rename commit leaves the saved name and artwork intact and can be retried', async t => {
+  const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const before = await f.store.load(); const character = before.characters[0]; const original = await fs.readFile(f.store.filename, 'utf8');
+  const rename = t.mock.method(fs, 'rename', async () => { throw new Error('Library write failed'); });
+  await assert.rejects(f.store.renameCharacter(character.id, 'New name'), /Library write failed/);
+  assert.deepEqual(f.store.snapshot(), before); assert.equal(await fs.readFile(f.store.filename, 'utf8'), original);
+  assert.ok(!(await fs.readdir(f.store.dataDir)).some(name => name.endsWith('.tmp')));
+  for (const sprite of characterSprites(character)) assert.ok(f.store.assetPath(character.id, sprite.file));
+  assert.deepEqual(await new LibraryStore(f.store.dataDir, f.legacy).load(), before);
+  rename.mock.restore();
+  const saved = await f.store.renameCharacter(character.id, 'New name'); assert.equal(saved.characters[0].name, 'New name');
+  assert.deepEqual(await new LibraryStore(f.store.dataDir, f.legacy).load(), saved);
+});
+
 test('deletes an inactive character and all its imported artwork while retaining other characters and drafts', async t => {
   const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
   const initial = await f.store.load(); const removed = await addCharacter(f.store);

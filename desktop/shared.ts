@@ -73,6 +73,7 @@ export interface BrowserStatus {
 export interface DesktopApi {
   bootstrap(): Promise<Bootstrap>;
   saveCharacter(character: Character): Promise<Bootstrap>;
+  renameCharacter(characterId: string, name: string): Promise<Bootstrap>;
   deleteCharacter(characterId: string): Promise<Bootstrap>;
   createVisemeDemo(): Promise<Bootstrap>;
   importImages(characterId: string, pose: AssetPose): Promise<Sprite[]>;
