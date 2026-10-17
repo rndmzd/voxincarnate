@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { LibraryStore, validateCharacter } from '../library.js';
 import { VISEMES, characterSprites, type Character, type MotionClip } from '../shared.js';
+import { addMotionChoices, defaultMotion, hasMotion, selectMotion } from '../character-motions.js';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
 async function fixture() {
@@ -20,6 +21,45 @@ async function addCharacter(store: LibraryStore, name = 'Second character'): Pro
   await store.saveCharacter(character);
   return character;
 }
+
+test('inactive gait artwork and multiple local choices survive save, switching and restart', async t => {
+  const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const original = (await f.store.load()).characters[0];
+  const gait = await f.store.importImageBuffers(original.id, [{ name: 'Walk on.png', png }, { name: 'Walk off.png', png }]);
+  const complete = addMotionChoices(original, {
+    enter: { walk: { ...defaultMotion('walk', 'left'), frames: [gait[0]] }, smoke: defaultMotion('smoke'), 'fall-jump': defaultMotion('fall-jump') },
+    exit: { walk: { ...defaultMotion('walk'), frames: [gait[1]] }, smoke: defaultMotion('smoke'), 'fall-jump': defaultMotion('fall-jump') }
+  });
+  const selected = selectMotion(selectMotion(complete, 'enter', 'smoke'), 'exit', 'fall-jump');
+  await f.store.saveCharacter(selected);
+  const restarted = new LibraryStore(path.join(f.root, 'data'), f.legacy); const restored = (await restarted.load()).characters[0];
+  assert.deepEqual(restored, selected);
+  for (const kind of ['enter', 'exit'] as const) for (const effect of ['walk', 'smoke', 'fall-jump'] as const) assert.equal(hasMotion(restored, kind, effect), true);
+  for (const sprite of characterSprites(restored)) assert.ok(restarted.assetPath(restored.id, sprite.file));
+  assert.deepEqual(selectMotion(restored, 'enter', 'walk').motions!.enter, complete.motions!.enter);
+  assert.throws(() => validateCharacter({ ...restored, motionVariants: { enter: { dance: defaultMotion('smoke') } } }), /unsupported/);
+  assert.throws(() => validateCharacter({ ...restored, motionVariants: { enter: { walk: defaultMotion('smoke') } } }), /match its effect/);
+  assert.throws(() => validateCharacter({ ...restored, motionVariants: { enter: { smoke: defaultMotion('smoke') } } }), /duplicated/);
+  assert.throws(() => validateCharacter({ ...restored, motionVariants: { enter: { walk: defaultMotion('walk') } } }), /between 1 and 64/);
+  assert.doesNotThrow(() => validateCharacter({ ...restored, motionVariants: { enter: { walk: defaultMotion('walk') } } }, true));
+  assert.throws(() => validateCharacter({ ...restored, motionVariants: { enter: { walk: { ...defaultMotion('walk'), side: 'up' } } } }, true), /side/);
+  assert.throws(() => validateCharacter({ ...restored, motionVariants: { enter: { walk: { ...defaultMotion('walk'), frames: [original.closed[0]] } } } }), /unique UUIDs/);
+});
+
+test('discarding staged additions protects active and inactive saved artwork and other characters', async t => {
+  const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const original = (await f.store.load()).characters[0];
+  const [retained, unsaved] = await f.store.importImageBuffers(original.id, [{ name: 'Retained.png', png }, { name: 'Unsaved.png', png }]);
+  const saved = selectMotion(addMotionChoices(original, { enter: { walk: { ...defaultMotion('walk'), frames: [retained] } } }), 'enter', 'smoke');
+  await f.store.saveCharacter(saved);
+  const other = await addCharacter(f.store);
+  await f.store.discardUnreferencedImages(original.id, [retained.file, unsaved.file, original.closed[0].file, other.closed[0].file]);
+  assert.ok(f.store.assetPath(original.id, retained.file)); assert.ok(f.store.assetPath(original.id, original.closed[0].file));
+  assert.equal(f.store.assetPath(original.id, unsaved.file), undefined); assert.ok(f.store.assetPath(other.id, other.closed[0].file));
+  const restarted = (await new LibraryStore(path.join(f.root, 'data'), f.legacy).load()).characters[0];
+  assert.deepEqual(restarted, saved);
+  await assert.rejects(f.store.discardUnreferencedImages(original.id, ['../library.json']), /path is invalid/);
+});
 test('seeds managed artwork and preserves token, IDs, settings and character edits through restart', async t => {
   const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true })); const initial = await f.store.load();
   assert.equal(initial.settings.assistantUrl, 'https://app.sesame.com'); assert.equal(initial.settings.overlayPort, 48241); assert.match(initial.token, /^[a-f0-9]{64}$/);
@@ -29,6 +69,43 @@ test('seeds managed artwork and preserves token, IDs, settings and character edi
   const restored = await new LibraryStore(path.join(f.root, 'data'), f.legacy).load();
   assert.equal(restored.token, initial.token); assert.equal(restored.characters[0].id, character.id); assert.equal(restored.characters[0].name, 'Updated avatar'); assert.equal(restored.characters[0].closed[0].x, 15); assert.equal(restored.settings.mode, 'browser');
   restored.characters[0].name = 'Attempt to mutate snapshot'; assert.equal(f.store.snapshot().characters[0].name, 'Updated avatar');
+});
+
+test('per-effect sounds persist as managed copies, remain optional, and cannot cross character boundaries', async t => {
+  const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true }));
+  const initial = await f.store.load(); const character = initial.characters[0];
+  assert.equal(character.motionSounds, undefined);
+  const wav = await fs.readFile(new URL('../../sounds/puff_of_smoke.wav', import.meta.url));
+  const sound = await f.store.importSoundBuffer(character.id, 'Puff.wav', wav);
+  const updated = { ...character, motionSounds: { smoke: sound, 'fall-jump': sound } };
+  await f.store.saveCharacter(updated);
+  const restarted = new LibraryStore(path.join(f.root, 'data'), f.legacy); const restored = await restarted.load();
+  assert.deepEqual(restored.characters[0].motionSounds, updated.motionSounds);
+  assert.deepEqual(await fs.readFile(restarted.assetPath(character.id, sound.file)!), wav);
+  const second = await addCharacter(f.store);
+  assert.equal(f.store.assetPath(second.id, sound.file), undefined);
+  await assert.rejects(f.store.saveCharacter({ ...second, motionSounds: { smoke: sound } }), /has not been imported/);
+  await assert.rejects(f.store.importSoundBuffer('../outside', 'Puff.wav', wav), /UUID/);
+  await assert.rejects(f.store.importSoundBuffer(character.id, 'bad.wav', Buffer.from('bad')), /WAV/);
+  for (const invalid of [null, { unknown: sound }, { smoke: null }, { smoke: { ...sound, file: '../private.wav' } }, { smoke: { ...sound, name: '' } }, { smoke: { ...sound, extra: true } }]) {
+    assert.throws(() => validateCharacter({ ...character, motionSounds: invalid }), /Animation|Sound|unsupported/);
+  }
+  await f.store.saveCharacter(character);
+  assert.equal((await new LibraryStore(path.join(f.root, 'data'), f.legacy).load()).characters[0].motionSounds, undefined);
+});
+
+test('deleted characters and discarded drafts revoke and remove their copied WAVs', async t => {
+  const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true })); await f.store.load();
+  const wav = await fs.readFile(new URL('../../sounds/puff_of_smoke.wav', import.meta.url));
+  const character = await addCharacter(f.store);
+  const sound = await f.store.importSoundBuffer(character.id, 'Puff.wav', wav);
+  await f.store.saveCharacter({ ...character, motionSounds: { smoke: sound } });
+  const filename = f.store.assetPath(character.id, sound.file)!;
+  await f.store.deleteCharacter(character.id);
+  assert.equal(f.store.assetPath(character.id, sound.file), undefined); await assert.rejects(fs.stat(filename), /ENOENT/);
+  const draftId = randomUUID(); const staged = await f.store.importSoundBuffer(draftId, 'Puff.wav', wav);
+  const draftFile = f.store.assetPath(draftId, staged.file)!; await f.store.discardCharacterDraft(draftId);
+  assert.equal(f.store.assetPath(draftId, staged.file), undefined); await assert.rejects(fs.stat(draftFile), /ENOENT/);
 });
 test('rejects invalid or cross-character asset references and malformed images before writes', async t => {
   const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true })); const initial = await f.store.load(); const character = initial.characters[0];

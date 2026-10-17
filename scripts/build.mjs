@@ -11,3 +11,4 @@ await mkdir(notices, { recursive: true });
 for (const filename of ['LICENSE', 'PROVENANCE.md']) {
   await copyFile(new URL(`../desktop/vendor/headaudio/${filename}`, import.meta.url), new URL(filename, notices));
 }
+await import('./build-streamdeck.mjs');

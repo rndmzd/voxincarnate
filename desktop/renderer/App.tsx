@@ -1,11 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { version as appVersion } from '../../package.json';
-import type { Bootstrap, Character, Sprite, AppSettings, BrowserStatus, InputDevice, DetectorSettings, Articulation, AssetPose, CharacterPresence, MotionEffect } from '../shared';
-import { spriteUrl, overlayUrl, VISEMES, VISEME_LABELS, spritesForPose as poseFrames, characterSprites as allFrames } from '../shared';
+import type { Bootstrap, Character, Sprite, AppSettings, BrowserStatus, InputDevice, DetectorSettings, Articulation, AssetPose, CharacterPresence, MotionEffect, MotionKind, MotionSound, SoundPreset } from '../shared';
+import { spriteUrl, overlayUrl, motionSoundUrl, MOTION_EFFECTS, MOTION_LABELS, SOUND_PRESETS, VISEMES, VISEME_LABELS, spritesForPose as poseFrames, characterSprites as allFrames } from '../shared';
+import { hasMotion, selectMotion } from '../character-motions';
 import { AudioEngine } from '../audio/engine';
 import { createAvatarAnimator, createMotionAnimator, drawSmokePuff } from '../animation';
+import { createMotionSoundPlayer } from '../motion-sound';
 import { CharacterCreator } from './CharacterCreator';
-declare global { interface Window { vox?: import('../shared').DesktopApi } }
+import { CharacterMotionGenerator } from './CharacterMotionGenerator';
+import { OnAirMotionControls } from './OnAirMotionControls';
+import { ControlSettingsPanel } from './ControlSettingsPanel';
+import { commandIssue, EMPTY_RUNTIME, parseCommand, type ControlCommand, type ControlResult, type ControlRuntime, type ControlState } from '../control-protocol';
+declare global { interface Window { vox?: import('../shared').DesktopApi; voxControl?: (command: ControlCommand) => Promise<ControlResult> } }
 type Level = { level: number; db: number; speaking: boolean; articulation?: Articulation; lipSyncError?: string };
 const silent: Level = { level: 0, db: -120, speaking: false };
 const frameKey = (frame?: Sprite) => frame ? `${frame.id}:${frame.file}:${frame.x}:${frame.y}:${frame.scale}` : '';
@@ -23,8 +29,9 @@ const iconPaths: Record<string, string> = {
 };
 function Icon({ name }: { name: string }) { return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={iconPaths[name] || iconPaths.sound} /></svg>; }
 
-function Avatar({ data, character, state, previewPose, selected, presence }: {
+function Avatar({ data, character, state, previewPose, selected, presence, soundEnabled, onSoundError }: {
   data: Bootstrap; character: Character; state: Level & { running: boolean }; previewPose?: AssetPose; selected?: Sprite; presence?: CharacterPresence;
+  soundEnabled: boolean; onSoundError: (message: string) => void;
 }) {
   const area = useRef<HTMLDivElement>(null);
   const smokeCanvas = useRef<HTMLCanvasElement>(null);
@@ -33,14 +40,15 @@ function Avatar({ data, character, state, previewPose, selected, presence }: {
   const motionAnimator = useRef(createMotionAnimator());
   const images = useRef(new Map<string, HTMLImageElement>());
   const decoded = useRef(new Set<string>());
-  const current = useRef({ character, state, previewPose, selected, presence });
+  const current = useRef({ character, state, previewPose, selected, presence, soundEnabled, onSoundError });
+  const soundPlayer = useRef(createMotionSoundPlayer((id, sound) => motionSoundUrl(data, id, sound), undefined, message => current.current.onSoundError(message)));
   const displayed = useRef<Sprite | undefined>(undefined);
   const [frame, setFrame] = useState<Sprite>();
   const [artworkError, setArtworkError] = useState(false);
   const [fit, setFit] = useState(1);
   const [motion, setMotion] = useState({ offsetX: 0, offsetY: 0, opacity: 1, scale: 1, flipX: false, smoke: 0, visible: true });
   const lastMotion = useRef(motion);
-  current.current = { character, state, previewPose, selected, presence };
+  current.current = { character, state, previewPose, selected, presence, soundEnabled, onSoundError };
   useEffect(() => {
     const resize = () => { if (area.current) {
       const nextFit = Math.min(area.current.clientWidth / character.width, area.current.clientHeight / character.height) * .88;
@@ -100,6 +108,7 @@ function Avatar({ data, character, state, previewPose, selected, presence }: {
   useEffect(() => {
     animator.current.reset();
     motionAnimator.current.reset();
+    soundPlayer.current.baseline(character.id);
     animator.current.update(current.current.character, current.current.state, performance.now());
     displayed.current = undefined;
     setFrame(undefined);
@@ -107,10 +116,12 @@ function Avatar({ data, character, state, previewPose, selected, presence }: {
   useEffect(() => {
     let request = 0;
     const tick = (now: number) => {
-      const { character: active, previewPose: audition, selected: picked, presence: activePresence } = current.current;
-      if (activePresence?.sequence === 0) motionAnimator.current.reset();
-      motionAnimator.current.update(active, activePresence, now, geometry.current);
+      const { character: active, previewPose: audition, selected: picked, presence: activePresence, soundEnabled: playSound } = current.current;
+      if (activePresence?.sequence === 0) { motionAnimator.current.reset(); soundPlayer.current.baseline(active.id); }
+      const started = motionAnimator.current.update(active, activePresence, now, geometry.current);
+      if (playSound) soundPlayer.current.play(active, started);
       const travel = motionAnimator.current.frame(now);
+      if (!playSound || !travel.active) soundPlayer.current.stop();
       const manual = audition ? poseFrames(active, audition)[0] : undefined;
       const animated = audition ? undefined : animator.current.frame(now);
       const fallbackClosed = audition ? audition === 'closed' || audition === 'A' || audition === 'X' : animator.current.isClosed();
@@ -132,7 +143,7 @@ function Avatar({ data, character, state, previewPose, selected, presence }: {
       request = requestAnimationFrame(tick);
     };
     request = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(request);
+    return () => { cancelAnimationFrame(request); soundPlayer.current.stop(); };
   }, [data.overlayOrigin, data.token]);
   return <div className="avatar-space" ref={area}>
     {frame ? <div className="avatar-canvas" style={{ width: character.width, height: character.height, visibility: motion.visible ? 'visible' : 'hidden', transform: `translate(-50%, -50%) scale(${fit})` }}>
@@ -152,6 +163,8 @@ export default function App() {
   const [editor, setEditor] = useState(false);
   const [creator, setCreator] = useState(false);
   const [presence, setPresence] = useState<CharacterPresence>({ visible: true, sequence: 0 });
+  const [previewSound, setPreviewSound] = useState(true);
+  const [listening, setListening] = useState<MotionEffect>();
   const [view, setView] = useState<'avatar' | 'browser'>('avatar');
   const [pose, setPose] = useState<AssetPose>('closed');
   const [selectedFrame, setSelectedFrame] = useState<string>();
@@ -160,7 +173,10 @@ export default function App() {
   const [browser, setBrowser] = useState<BrowserStatus>({ url: '' });
   const [level, setLevel] = useState<Level>(silent);
   const [running, setRunning] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [uiBusy, setBusy] = useState(false);
+  const [commandBusy, setCommandBusy] = useState(false);
+  const busy = uiBusy || commandBusy;
+  const [controlsOpen, setControlsOpen] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [lipSyncError, setLipSyncError] = useState('');
@@ -172,6 +188,16 @@ export default function App() {
   const browserArea = useRef<HTMLDivElement>(null);
   const activeId = useRef('');
   const captureActive = useRef(false);
+  const audioRunning = useRef(false);
+  const controlCommands = useRef(0);
+  const runtimeRef = useRef<ControlRuntime>({ ...EMPTY_RUNTIME });
+  const commandHandler = useRef<(command: ControlCommand) => Promise<ControlResult>>(async () => ({ ok: false, code: 'not_ready', message: 'The studio is opening.' }));
+  const soundAudition = useRef<HTMLAudioElement | undefined>(undefined);
+
+  useEffect(() => {
+    soundAudition.current?.pause(); setListening(undefined);
+    return () => { soundAudition.current?.pause(); };
+  }, [draft?.id, editor]);
 
   useEffect(() => { setPresence({ visible: true, sequence: 0 }); }, [pose]);
   useEffect(() => {
@@ -181,6 +207,11 @@ export default function App() {
     }
   }, [renaming, busy, renameError]);
 
+  useEffect(() => {
+    window.voxControl = command => commandHandler.current(command);
+    const unsubscribe = window.vox?.onControlResult(result => { if (!result.ok && result.message) setError(result.message); });
+    return () => { delete window.voxControl; unsubscribe?.(); };
+  }, []);
   useEffect(() => {
     if (!window.vox) { setError('Open Voxincarnate as a desktop application using npm start. This browser preview cannot access desktop files or embedded audio.'); return; }
     let disposed = false;
@@ -203,12 +234,13 @@ export default function App() {
     const update = () => {
       const rect = browserArea.current?.getBoundingClientRect();
       window.vox?.browserBounds({ x: rect?.x || 0, y: rect?.y || 0, width: rect?.width || 0, height: rect?.height || 0,
-        visible: view === 'browser' && settings?.mode === 'browser' && !editor && !creator && !!rect && rect.top >= 72 && rect.bottom <= window.innerHeight });
+        visible: view === 'browser' && settings?.mode === 'browser' && !editor && !creator && !controlsOpen && !!rect && rect.top >= 72 && rect.bottom <= window.innerHeight });
     };
     const observer = new ResizeObserver(update); if (browserArea.current) observer.observe(browserArea.current);
     window.addEventListener('resize', update); window.addEventListener('scroll', update, true); update();
     return () => { observer.disconnect(); window.removeEventListener('resize', update); window.removeEventListener('scroll', update, true); };
-  }, [view, settings?.mode, editor, creator, error, notice]);
+  }, [view, settings?.mode, editor, creator, controlsOpen, error, notice]);
+  useEffect(() => { window.vox?.controlRuntime({ ...runtimeRef.current, running: audioRunning.current }); }, [data, settings, draft?.id, dirty, busy, running, devices, browser]);
   useEffect(() => {
     const onClose = (e: BeforeUnloadEvent) => { if (dirty) { e.preventDefault(); e.returnValue = ''; } };
     window.addEventListener('beforeunload', onClose); return () => window.removeEventListener('beforeunload', onClose);
@@ -221,6 +253,7 @@ export default function App() {
   };
   const stop = async () => {
     captureActive.current = false;
+    audioRunning.current = false;
     setRunning(false); setLevel(silent); setLipSyncError(''); setManual('auto');
     if (activeId.current) window.vox?.publish({ characterId: activeId.current, ...silent, running: false });
     await engine.current?.stop(); await window.vox?.browser('stop');
@@ -233,7 +266,7 @@ export default function App() {
   });
   const patchCharacter = (patch: Partial<Character>) => { setDraft(current => current && { ...current, ...patch }); setDirty(true); };
   const discardDraft = async () => {
-    if (draft && data && !data.characters.some(character => character.id === draft.id)) await window.vox!.discardCharacterDraft(draft.id);
+    if (draft && data) await window.vox!.discardCharacterDraft(draft.id);
   };
   const replacePose = (frames: Sprite[]) => {
     if (!draft) return;
@@ -325,15 +358,29 @@ export default function App() {
     if (!draft) return; const imported = await window.vox!.importImages(draft.id, pose);
     if (imported.length) { replacePose([...poseFrames(draft, pose), ...imported]); setSelectedFrame(imported[0].id); }
   });
-  const refreshInputs = () => void perform(async () => {
-    if (settings?.mode === 'browser') { setBrowser(previous => ({ ...previous, error: '', message: 'Checking the assistant browser for microphone inputs…' })); await window.vox!.browser('devices'); return; }
+  const refreshInputs = async () => {
+    if (settings?.mode === 'browser') {
+      setBrowser(previous => ({ ...previous, error: '', message: 'Checking the assistant browser for microphone inputs…' }));
+      let unsubscribe = () => {}; let timer: ReturnType<typeof setTimeout>;
+      const discovered = new Promise<void>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('Microphone refresh timed out. Reload the assistant website and try again.')), 15000);
+        unsubscribe = window.vox!.onBrowserStatus(value => {
+          if (value.devices) runtimeRef.current.inputs = value.devices;
+          if (value.error) reject(new Error(value.error)); else if (value.devices) resolve();
+        });
+      });
+      try { await Promise.all([window.vox!.browser('devices'), discovered]); setNotice('Assistant microphone inputs refreshed.'); }
+      finally { clearTimeout(timer!); unsubscribe(); }
+      return;
+    }
     const permission = await navigator.mediaDevices.getUserMedia({ audio: true }); permission.getTracks().forEach(t => t.stop());
     const list = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
     setDevices(list.map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Audio input ${i + 1}` })));
+    runtimeRef.current.inputs = list.map(d => ({ deviceId: d.deviceId, label: d.label }));
     if (settings && !list.some(d => d.deviceId === settings.inputId)) { setSettings({ ...settings, inputId: list[0]?.deviceId || '' }); setDirty(true); }
     setNotice('Inputs refreshed. Choose the source to animate.');
-  });
-  const start = () => void perform(async () => {
+  };
+  const start = async () => {
     if (!settings || !draft || !engine.current) return;
     if (dirty) throw new Error('Save your changes before starting audio.');
     activeId.current = draft.id; setManual('auto'); setLipSyncError(''); captureActive.current = true;
@@ -342,7 +389,7 @@ export default function App() {
       setLevel(value); setLipSyncError(value.lipSyncError || '');
       window.vox!.publish({ characterId: activeId.current, level: value.level, db: value.db, speaking: value.speaking, ...(value.articulation ? { articulation: value.articulation } : {}), running: true });
     };
-    const ended = (message?: string) => { captureActive.current = false; setRunning(false); setLevel(silent); setLipSyncError(''); if (message) setError(message);
+    const ended = (message?: string) => { captureActive.current = false; audioRunning.current = false; setRunning(false); setLevel(silent); setLipSyncError(''); if (message) setError(message);
       window.vox!.publish({ characterId: activeId.current, ...silent, running: false }); void window.vox!.browser('stop'); };
     try {
       if (settings.mode === 'direct') {
@@ -351,23 +398,91 @@ export default function App() {
       } else {
         if (!settings.browserInputId || !browser.devices?.some(d => d.deviceId === settings.browserInputId)) throw new Error('Enable inputs in the assistant browser, then choose its microphone.');
         await window.vox!.browser('input', settings.browserInputId);
+        if (!captureActive.current) throw new Error('Audio startup was cancelled.');
         await engine.current.startBrowser(onLevel, ended);
       }
-      setRunning(true);
+      if (!captureActive.current) throw new Error('Audio startup was cancelled.');
+      audioRunning.current = true; setRunning(true);
     } catch (e) { await stop(); throw e; }
-  });
+  };
   const updateSprite = (patch: Partial<Sprite>) => {
     if (!draft || !selectedFrame) return;
     replacePose(poseFrames(draft, pose).map(f => f.id === selectedFrame ? { ...f, ...patch } : f));
   };
-  const previewMotion = (visible: boolean) => { setPresence(previous => ({ visible, sequence: previous.sequence + 1 })); setSelectedFrame(undefined); setView('avatar'); };
+  const stopSoundAudition = () => { soundAudition.current?.pause(); soundAudition.current = undefined; setListening(undefined); };
+  const previewMotion = (visible: boolean) => { stopSoundAudition(); setPreviewSound(true); setPresence(previous => ({ visible, sequence: previous.sequence + 1 })); setSelectedFrame(undefined); setView('avatar'); };
+  const setMotionSound = (effect: MotionEffect, sound?: MotionSound) => {
+    if (!draft) return;
+    stopSoundAudition();
+    const motionSounds = { ...draft.motionSounds };
+    if (sound) motionSounds[effect] = sound; else delete motionSounds[effect];
+    patchCharacter({ motionSounds }); setPresence({ visible: true, sequence: 0 });
+  };
+  const chooseMotionSound = (effect: MotionEffect, value: string) => {
+    if (value === 'none') { setMotionSound(effect); return; }
+    if (value === 'selected' || !draft) return;
+    void perform(async () => {
+      const sound = await window.vox!.importMotionSound(draft.id, value === 'custom' ? undefined : value as SoundPreset);
+      if (sound) setMotionSound(effect, sound);
+    });
+  };
+  const listenToSound = (effect: MotionEffect) => {
+    if (listening === effect) { stopSoundAudition(); return; }
+    const sound = draft?.motionSounds?.[effect];
+    if (!data || !draft || !sound) return;
+    stopSoundAudition(); setPresence({ visible: true, sequence: 0 });
+    void perform(async () => {
+      const audio = new Audio(motionSoundUrl(data, draft.id, sound)); soundAudition.current = audio;
+      const finish = () => { if (soundAudition.current === audio) { soundAudition.current = undefined; setListening(undefined); } };
+      audio.addEventListener('ended', finish, { once: true });
+      audio.addEventListener('error', () => { if (soundAudition.current === audio) { finish(); setError(`Could not play ${sound.name}. Try another WAV file.`); } }, { once: true });
+      setListening(effect);
+      try { await audio.play(); } catch { if (soundAudition.current !== audio) return; finish(); throw new Error(`Could not play ${sound.name}. Try another WAV file.`); }
+    });
+  };
   const setEffect = (kind: 'enter' | 'exit', value: string) => {
     if (!draft) return;
-    const motions = { ...draft.motions };
-    if (value === 'none') delete motions[kind];
-    else motions[kind] = { frames: [], frameMs: 120, durationMs: value === 'walk' ? 1800 : 1000,
-      side: kind === 'exit' ? motions.enter?.side || 'right' : 'right', facing: 'right', ...motions[kind], effect: value as MotionEffect };
-    patchCharacter({ motions }); setPresence({ visible: true, sequence: 0 });
+    const next = selectMotion(draft, kind, value === 'none' ? undefined : value as MotionEffect);
+    patchCharacter({ motions: next.motions, motionVariants: next.motionVariants }); setPresence({ visible: true, sequence: 0 }); setSelectedFrame(undefined);
+  };
+  const triggerOnAirMotion = async (kind: MotionKind, effect?: MotionEffect, characterId = draft?.id) => {
+    if (!characterId) throw new Error('Choose a saved character.');
+    stopSoundAudition(); setPreviewSound(false); setSelectedFrame(undefined);
+    const next = await window.vox!.setCharacterPresence(characterId, kind === 'enter', effect);
+    if (characterId === draft?.id) setPresence(previous => ({ ...next, sequence: Math.max(next.sequence, previous.sequence + 1) }));
+    setNotice(`${kind === 'enter' ? 'Entrance' : 'Exit'} sent to OBS${effect ? `: ${MOTION_LABELS[kind][effect]}` : ''}.`);
+  };
+
+  runtimeRef.current = { ready: !!data && !!settings && !!draft, busy: uiBusy, dirty, running: audioRunning.current,
+    mode: settings?.mode ?? 'direct', activeCharacterId: draft?.id ?? '', selectedInputId: (settings?.mode === 'browser' ? settings.browserInputId : settings?.inputId) ?? '',
+    inputs: settings?.mode === 'browser' ? browser.devices ?? [] : devices };
+  commandHandler.current = async value => {
+    const command = parseCommand(value);
+    const state: ControlState = { ...runtimeRef.current, busy: uiBusy || controlCommands.current > 0, apiVersion: 1, revision: 0, characters: (data?.characters ?? []).map(character => ({
+      id: character.id, name: character.name, visible: true,
+      motions: { enter: MOTION_EFFECTS.filter(effect => hasMotion(character, 'enter', effect)), exit: MOTION_EFFECTS.filter(effect => hasMotion(character, 'exit', effect)) }
+    })) };
+    const issue = commandIssue(state, command); if (issue) return issue;
+    ++controlCommands.current; setCommandBusy(true); setError(''); setNotice('');
+    window.vox!.controlRuntime(runtimeRef.current);
+    try {
+      if (command.action === 'audio.stop' || (command.action === 'audio.toggle' && audioRunning.current)) await stop();
+      else if (command.action === 'audio.start' || command.action === 'audio.toggle') { if (!audioRunning.current) await start(); }
+      else if (command.action === 'inputs.refresh') await refreshInputs();
+      else await triggerOnAirMotion(command.action === 'character.enter' ? 'enter' : 'exit', command.effect, command.characterId ?? draft?.id);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error); setError(message);
+      return { ok: false, code: 'action_failed', message };
+    } finally {
+      --controlCommands.current;
+      setCommandBusy(controlCommands.current > 0);
+      window.vox!.controlRuntime({ ...runtimeRef.current, running: audioRunning.current });
+    }
+  };
+  const runControl = (command: ControlCommand) => {
+    setCommandBusy(true);
+    void window.vox!.control(command).catch(error => setError(error.message)).finally(() => setCommandBusy(controlCommands.current > 0));
   };
 
   if (!data || !draft || !settings) return <main className="loading-screen"><Icon name="sound" /><h1>Voxincarnate</h1><p role={error ? 'alert' : 'status'}>{error || 'Opening your studio…'}</p></main>;
@@ -389,8 +504,10 @@ export default function App() {
       <div className="wordmark"><span className="brand-icon"><Icon name="sound" /></span><strong>Voxincarnate</strong><span className="app-version">STUDIO</span></div>
       <div className="session-status"><span className={`status-dot ${running ? 'live' : ''}`} />{running ? 'Audio active' : 'Ready when you are'}</div>
       <span className="save-state">{dirty ? 'Unsaved changes' : 'All changes saved'}</span>
+      <button id="open-control-settings" className="secondary" onClick={() => setControlsOpen(true)}>Stream Deck &amp; hotkeys</button>
       <button className="primary save-button" disabled={busy || creator || !dirty || !draft.closed.length || !draft.open.length || invalidMotion} onClick={save}><Icon name="check" />Save changes</button>
     </header>
+    {controlsOpen && <ControlSettingsPanel characters={data.characters} onClose={() => setControlsOpen(false)} />}
     <aside className="library">
       <div className="section-title"><h2>Characters</h2><span>{data.characters.length}</span></div>
       <button className="add-character" onClick={create} disabled={busy || running}><Icon name="plus" />New character</button>
@@ -424,7 +541,7 @@ export default function App() {
               {settings.mode === 'browser' && !editor && <button className={view === 'browser' ? 'active' : ''} onClick={() => setView('browser')}>Assistant browser</button>}</div>
               <span className="canvas-size">{draft.width} × {draft.height}</span></div>
             <div className={`stage ${view === 'browser' && !editor ? 'with-browser' : ''}`}>
-              <Avatar data={data} character={draft} state={previewState} previewPose={previewPose} selected={editor ? picked : undefined} presence={presence} />
+              <Avatar data={data} character={draft} state={previewState} previewPose={previewPose} selected={editor ? picked : undefined} presence={presence} soundEnabled={previewSound} onSoundError={setError} />
               <div ref={browserArea} className="browser-area" aria-label="Embedded assistant browser" hidden={view !== 'browser' || editor} />
               {view === 'avatar' && <div className="stage-label"><span className={`status-dot ${!editor && speaking ? 'live' : ''}`} />{editor ? `${pose} · ${frames.length ? 'Pose preview' : 'Fallback preview'}` : speaking ? 'Speaking' : 'Idle'}<span>Transparent canvas</span></div>}
             </div>
@@ -432,14 +549,29 @@ export default function App() {
             {(draft.motions?.enter || draft.motions?.exit) && <div className="walk-preview"><span>Preview entrance / exit</span><button className="secondary" disabled={!draft.motions?.enter || ((!draft.motions.enter.effect || draft.motions.enter.effect === 'walk') && !draft.motions.enter.frames.length)} onClick={() => previewMotion(true)}>{draft.motions?.enter?.effect && draft.motions.enter.effect !== 'walk' ? 'Preview entrance' : 'Walk in'}</button><button className="secondary" disabled={!draft.motions?.exit || ((!draft.motions.exit.effect || draft.motions.exit.effect === 'walk') && !draft.motions.exit.frames.length)} onClick={() => previewMotion(false)}>{draft.motions?.exit?.effect && draft.motions.exit.effect !== 'walk' ? 'Preview exit' : 'Walk out'}</button><span className="helper">Local preview</span></div>}
           </section>
           {editor && !creator && <section className="builder"><div className="builder-header"><h2>Character builder</h2><span>Keep a closed and open image for fallback</span><button className="text-button" disabled={busy} onClick={() => { if (allFrames(draft).length && !window.confirm('Generate a new character kit? Your current draft stays here until generation succeeds.')) return; setCreator(true); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>Create from an image or idea</button></div>
+            {!isNew && <CharacterMotionGenerator key={draft.id} character={draft} busy={busy} onWorking={setBusy} onAdded={character => {
+              patchCharacter({ motions: character.motions, motionVariants: character.motionVariants }); setPresence({ visible: true, sequence: 0 }); setSelectedFrame(undefined);
+              setNotice('New animations ready. Choose the active entrance and exit, preview them, then save.');
+            }} />}
+            <fieldset className="builder-controls" disabled={busy}>
             <div className="character-fields"><label>Name<input value={draft.name} maxLength={120} onChange={e => patchCharacter({ name: e.target.value })} /></label><label>Canvas width<input type="number" min="64" max="4096" value={draft.width} onChange={e => patchCharacter({ width: Number(e.target.value) })} /></label><label>Canvas height<input type="number" min="64" max="4096" value={draft.height} onChange={e => patchCharacter({ height: Number(e.target.value) })} /></label><label>Frame interval (ms)<input type="number" min="60" max="5000" value={draft.frameMs} onChange={e => patchCharacter({ frameMs: Number(e.target.value) })} /></label></div>
             <div className="animation-setting"><label htmlFor="animation-mode">Mouth animation<select id="animation-mode" value={visemeMode ? 'viseme' : 'binary'} onChange={e => { const mode = e.target.value === 'viseme' ? 'viseme' : 'binary'; patchCharacter({ animationMode: mode }); setPose(mode === 'viseme' ? 'X' : 'closed'); setSelectedFrame(undefined); }}><option value="binary">Closed / open</option><option value="viseme">Lip sync · nine mouth poses</option></select></label><p className="helper">{visemeMode ? 'Add distinct mouth shapes for speech sounds. Your existing closed/open images remain available for missing poses.' : 'Use audio volume to switch between closed and open artwork. Lip sync lets you add mouth shapes for individual sounds.'}</p></div>
             <div className="entrance-settings"><h3>Entrance and exit</h3><div className="entrance-options">{(['enter', 'exit'] as const).map(kind => {
               const clip = draft.motions?.[kind];
-              return <div key={kind}><label htmlFor={`motion-effect-${kind}`}>{kind === 'enter' ? 'Entrance animation' : 'Exit animation'}<select id={`motion-effect-${kind}`} value={clip ? clip.effect || 'walk' : 'none'} onChange={event => setEffect(kind, event.target.value)}><option value="none">No animation</option><option value="walk">Walk {kind === 'enter' ? 'in from an edge' : 'out through an edge'}</option><option value="smoke">{kind === 'enter' ? 'Appear' : 'Disappear'} in smoke</option><option value="fall-jump">{kind === 'enter' ? 'Fall from the top' : 'Jump out through the top'}</option></select></label>
+              return <div key={kind}><label htmlFor={`motion-effect-${kind}`}>{kind === 'enter' ? 'Active entrance animation' : 'Active exit animation'}<select id={`motion-effect-${kind}`} value={clip ? clip.effect || 'walk' : 'none'} onChange={event => setEffect(kind, event.target.value)}><option value="none">No animation</option>{(['walk', 'fall-jump', 'smoke'] as MotionEffect[]).map(effect => <option key={effect} value={effect}>{MOTION_LABELS[kind][effect]}{hasMotion(draft, kind, effect) ? ' · available' : effect === 'walk' ? ' · needs artwork' : ''}</option>)}</select></label>
                 {clip && <div className="entrance-timing"><label>{kind === 'enter' ? 'Enter from' : 'Exit toward'}<select value={clip.side} disabled={clip.effect === 'smoke' || clip.effect === 'fall-jump'} onChange={event => patchCharacter({ motions: { ...draft.motions, [kind]: { ...clip, side: event.target.value as 'left' | 'right' } } })}><option value="right">Right edge · {kind === 'enter' ? 'moves left' : 'moves right'}</option><option value="left">Left edge · {kind === 'enter' ? 'moves right' : 'moves left'}</option></select></label><label>Duration (ms)<input type="number" min="200" max="20000" step="100" value={clip.durationMs} onChange={event => patchCharacter({ motions: { ...draft.motions, [kind]: { ...clip, durationMs: Number(event.target.value) } } })} /></label></div>}
               </div>;
-            })}</div><p className="helper">Walks begin just beyond the visible frame edge. Smoke and fall/jump use the original resting artwork and need no new images.</p>{invalidMotion && <p className="inline-error" role="status">Add walking frames in the artwork picker before saving, or choose smoke or fall/jump.</p>}</div>
+            })}</div><p className="helper">Switching keeps each animation’s artwork and timing. Walks begin just beyond the frame edge; jump and smoke use the resting artwork.</p>{invalidMotion && <p className="inline-error" role="status">Generate the missing walk above or add walking frames in the artwork picker before saving.</p>}
+              <fieldset className="animation-sounds"><legend>Sound effects <span className="optional">optional</span></legend><p className="helper" id="sound-effects-help">One sound per animation type, shared by entrance and exit. Choose No sound for silence.</p>
+                {MOTION_EFFECTS.map(effect => {
+                  const sound = draft.motionSounds?.[effect];
+                  const label = effect === 'walk' ? 'Walking' : effect === 'smoke' ? 'Smoke' : 'Fall / Jump';
+                  return <div className="animation-sound-row" key={effect}><label htmlFor={`motion-sound-${effect}`}>{label}<select id={`motion-sound-${effect}`} value={sound ? 'selected' : 'none'} aria-describedby="sound-effects-help" disabled={busy} onChange={event => chooseMotionSound(effect, event.target.value)}>
+                    <option value="none">No sound</option>{sound && <option value="selected">{sound.name}</option>}{SOUND_PRESETS.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}<option value="custom">Choose WAV file…</option>
+                  </select></label><button className="secondary" disabled={!sound || busy} onClick={() => listenToSound(effect)} aria-label={`${listening === effect ? 'Stop' : 'Listen to'} ${label.toLowerCase()} sound`}><Icon name={listening === effect ? 'stop' : 'play'} />{listening === effect ? 'Stop' : 'Listen'}</button></div>;
+                })}<p className="helper">Sounds play once and stop when the animation ends. Save changes to use them in OBS.</p>
+              </fieldset>
+            </div>
             {visemeMode && <div className="pose-completeness"><div className="label-row"><strong>Mouth poses</strong><span>{completePoses}/9 added{completePoses < 9 ? ' · Missing poses use fallback artwork' : ' · All poses ready'}</span></div><div className="pose-status">{VISEMES.map(p => <button key={p} className={`${pose === p ? 'active ' : ''}${draft.visemes?.[p]?.length ? 'complete' : ''}`} onClick={() => { setPose(p); setSelectedFrame(undefined); }} aria-pressed={pose === p} title={`${VISEME_LABELS[p]} · ${draft.visemes?.[p]?.length || 0} images`}><b>{p}</b><span>{VISEME_LABELS[p]}</span><small>{draft.visemes?.[p]?.length ? 'Added' : 'Missing'}</small></button>)}</div></div>}
             <div className="builder-tools"><label className="pose-picker" htmlFor="mouth-pose">Preview and edit artwork<select id="mouth-pose" value={pose} onChange={e => { setPose(e.target.value as AssetPose); setSelectedFrame(undefined); setPresence({ visible: true, sequence: 0 }); }}>
               {visemeMode && <optgroup label="Lip-sync mouth poses">{VISEMES.map(p => <option key={p} value={p}>{p} · {VISEME_LABELS[p]} ({draft.visemes?.[p]?.length || 0})</option>)}</optgroup>}
@@ -456,6 +588,7 @@ export default function App() {
             </div>}
             <div className="frame-list">{frames.map((frame, index) => <div className={`frame ${frame.id === selectedFrame ? 'selected' : ''}`} key={frame.id}><button className="frame-select" onClick={() => setSelectedFrame(frame.id)}><img src={spriteUrl(data, draft.id, frame)} alt={frame.name} /><span>{index === 0 ? 'Default · ' : ''}{frame.name}</span></button><div className="frame-actions"><button disabled={index === 0} onClick={() => { const list = [...frames]; [list[index - 1], list[index]] = [list[index], list[index - 1]]; replacePose(list); }}>Move earlier</button><button onClick={() => { replacePose(frames.filter(f => f.id !== frame.id)); if (selectedFrame === frame.id) setSelectedFrame(undefined); }}>Remove</button></div></div>)}{!frames.length && <p className="empty-frames">{visemeMode && pose !== 'closed' && pose !== 'open' ? `${pose} has no artwork yet; the preview uses a fallback. ` : ''}Add PNG or JPEG images for this pose. Transparent PNGs work best for OBS.</p>}</div>
             {picked && <div className="alignment"><strong>Align {picked.name}</strong><label>Horizontal offset<input type="number" min="-4096" max="4096" value={picked.x} onChange={e => updateSprite({ x: Number(e.target.value) })} /></label><label>Vertical offset<input type="number" min="-4096" max="4096" value={picked.y} onChange={e => updateSprite({ y: Number(e.target.value) })} /></label><label>Scale<input type="range" min="0.1" max="4" step="0.05" value={picked.scale} onChange={e => updateSprite({ scale: Number(e.target.value) })} /></label><button className="text-button" onClick={() => updateSprite({ x: 0, y: 0, scale: 1 })}>Reset alignment</button></div>}
+            </fieldset>
           </section>}
         </div>
         <aside className="inspector">
@@ -465,14 +598,14 @@ export default function App() {
             {settings.mode === 'browser' && <div className="browser-settings"><label htmlFor="assistant-url">Assistant website</label><div className="url-row"><input id="assistant-url" type="url" value={settings.assistantUrl} onChange={e => { setSettings({ ...settings, assistantUrl: e.target.value }); setDirty(true); }} /><button className="icon-button" title="Open assistant" aria-label="Open assistant" disabled={busy || running} onClick={() => void perform(async () => { await window.vox!.browser('navigate', settings.assistantUrl); setView('browser'); })}><Icon name="browser" /></button></div>
               <div className="browser-nav"><button aria-label="Back" onClick={() => void perform(() => window.vox!.browser('back'))}><Icon name="arrow" /></button><button aria-label="Reload assistant" onClick={() => void perform(() => window.vox!.browser('reload'))}><Icon name="refresh" /></button><span>{browser.loading ? 'Loading website…' : browser.url ? 'Website open' : 'Open the website to begin'}</span></div>
               <p className="helper">Select a microphone, save, then capture assistant audio before starting the site’s voice call. Sign-in and guest access are managed by the website.</p></div>}
-            <div className="label-row"><label htmlFor="audio-input">{settings.mode === 'browser' ? 'Microphone sent to assistant' : 'Audio input'}</label><button className="text-button" onClick={refreshInputs} disabled={busy || running}>Enable / refresh</button></div>
+            <div className="label-row"><label htmlFor="audio-input">{settings.mode === 'browser' ? 'Microphone sent to assistant' : 'Audio input'}</label><button className="text-button" onClick={() => runControl({ action: 'inputs.refresh' })} disabled={busy || running}>Enable / refresh</button></div>
             <select id="audio-input" value={inputId} disabled={running || busy} onChange={e => { const field = settings.mode === 'browser' ? 'browserInputId' : 'inputId'; setSettings({ ...settings, [field]: e.target.value }); setDirty(true); }}><option value="">Choose an input…</option>{inputList.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label}</option>)}</select>
             {settings.mode === 'browser' && <p className="helper">The browser’s response drives the avatar. Your input is kept separate.{browser.actualInput && <><br />Verified input: {browser.actualInput}</>}</p>}
             {browser.error && settings.mode === 'browser' && <p className="inline-error" role="alert">{browser.error}</p>}
             {browser.message && !browser.error && settings.mode === 'browser' && <p className="helper" role="status">{browser.message}</p>}
             <div className="level-label"><span>{settings.mode === 'browser' ? 'Assistant output' : 'Input level'}</span><span>{running ? `${Math.round(level.db)} dB` : 'No audio'}</span></div>
             <meter min={-70} max={0} low={-50} high={-10} optimum={-25} value={level.db} aria-label="Audio level" />
-            <button className={`transport ${running ? 'secondary' : 'primary'}`} disabled={busy || isNew} onClick={running ? () => void perform(stop) : start}><Icon name={running ? 'stop' : 'play'} />{busy ? 'Please wait…' : running ? 'Stop audio' : settings.mode === 'browser' ? 'Capture assistant audio' : 'Start audio'}</button>
+            <button className={`transport ${running ? 'secondary' : 'primary'}`} disabled={(busy && !running) || isNew} onClick={() => runControl({ action: running ? 'audio.stop' : 'audio.start' })}><Icon name={running ? 'stop' : 'play'} />{busy && !running ? 'Please wait…' : running ? 'Stop audio' : settings.mode === 'browser' ? 'Capture assistant audio' : 'Start audio'}</button>
             {visemeMode && <p className="helper">Lip sync runs locally on this computer. {completePoses}/9 mouth poses available.</p>}
             {lipSyncError && visemeMode && <p className="inline-error" role="status">{lipSyncError} Using closed/open animation. Stop audio and start again to retry.</p>}
             <details className="audio-tuning"><summary>Audio response</summary>
@@ -481,12 +614,12 @@ export default function App() {
               <label htmlFor="hold">Mouth hold <span>{settings.detector.holdMs} ms</span></label><input id="hold" type="range" min="0" max="300" step="10" value={settings.detector.holdMs} onChange={e => patchDetector({ holdMs: Number(e.target.value) })} />
             </details>
           </section>
+          <OnAirMotionControls character={draft} disabledReason={isNew ? 'Save this character to enable on-air animations.' : dirty ? 'Save changes to enable on-air animations.' : busy ? 'Wait for the current action to finish.' : undefined} onTrigger={(kind, effect) => runControl({ action: kind === 'enter' ? 'character.enter' : 'character.exit', effect })} />
           <section className="obs-panel"><h2>Take it to OBS</h2><p>Add a Browser Source and paste this character’s URL.</p>
             <code className="overlay-address" title={overlayUrl(data, draft.id)}>{data.overlayOrigin}/overlay/{draft.id.slice(0, 8)}…</code>
             <button className="secondary wide" disabled={isNew || busy} onClick={() => void perform(async () => { await window.vox!.copy(overlayUrl(data, draft.id)); setNotice('OBS URL copied. Add a Browser Source with this URL.'); })}><Icon name="copy" />Copy OBS URL</button>
-            <dl><div><dt>Canvas</dt><dd>{draft.width} × {draft.height}</dd></div><div><dt>Background</dt><dd>Transparent</dd></div><div><dt>Output</dt><dd>Avatar only</dd></div></dl>
-            <p className="helper">Capture the app’s audio separately in OBS. Transparent PNGs keep the character’s background clear.</p>
-            {(draft.motions?.enter || draft.motions?.exit) && <div className="obs-presence"><h3>On-air entrance / exit</h3><div><button className="secondary" disabled={isNew || dirty || busy} onClick={() => void perform(async () => { const next = await window.vox!.setCharacterPresence(draft.id, true); setPresence(previous => ({ ...next, sequence: previous.sequence + 1 })); setNotice('Entrance sent to OBS.'); })}>Enter OBS</button><button className="secondary" disabled={isNew || dirty || busy} onClick={() => void perform(async () => { const next = await window.vox!.setCharacterPresence(draft.id, false); setPresence(previous => ({ ...next, sequence: previous.sequence + 1 })); setNotice('Exit sent to OBS.'); })}>Exit OBS</button></div><p className="helper">These buttons control the saved character in OBS. An exit keeps it hidden until the next entrance.</p></div>}
+            <dl><div><dt>Canvas</dt><dd>{draft.width} × {draft.height}</dd></div><div><dt>Background</dt><dd>Transparent</dd></div><div><dt>Output</dt><dd>{Object.keys(draft.motionSounds ?? {}).length ? 'Avatar + sound effects' : 'Avatar only'}</dd></div></dl>
+            <p className="helper">Capture assistant audio or your audio input separately in OBS. Transparent PNGs keep the character’s background clear.</p>
           </section>
         </aside>
       </div>

@@ -2,10 +2,12 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { promises as fs, existsSync } from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_DETECTOR, VISEMES, characterSprites, spritesForPose, type AppSettings, type Character, type Library, type Sprite, type AssetPose } from './shared.js';
+import { DEFAULT_DETECTOR, VISEMES, MOTION_EFFECTS, MOTION_KINDS, characterSprites, type AppSettings, type Character, type Library, type Sprite, type MotionClip, type MotionSound } from './shared.js';
+import { MAX_SOUND_BYTES, validateWav } from './wav.js';
 
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ASSET = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.png$/i;
+const SOUND_ASSET = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.wav$/i;
 const PNG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const clone = <T>(value: T): T => structuredClone(value);
@@ -20,35 +22,65 @@ function number(value: unknown, min: number, max: number, label: string, integer
 function text(value: unknown, max: number, label: string, empty = false): asserts value is string {
   assert(typeof value === 'string' && (empty || value.trim().length > 0) && value.length <= max && !/[\u0000-\u001f]/.test(value), `${label} is invalid.`);
 }
-export function validateCharacter(value: unknown): asserts value is Character {
-  object(value, ['id', 'name', 'width', 'height', 'closed', 'open', 'frameMs'], 'Character', ['animationMode', 'visemes', 'motions']);
+export function validateCharacter(value: unknown, allowEmptyWalking = false): asserts value is Character {
+  object(value, ['id', 'name', 'width', 'height', 'closed', 'open', 'frameMs'], 'Character', ['animationMode', 'visemes', 'motions', 'motionVariants', 'motionSounds']);
   assert(typeof value.id === 'string' && ID.test(value.id), 'Character ID must be a UUID.');
   text(value.name, 120, 'Character name');
   number(value.width, 64, 4096, 'Canvas width', true); number(value.height, 64, 4096, 'Canvas height', true);
   number(value.frameMs, 40, 10000, 'Frame duration', true);
   if (Object.hasOwn(value, 'animationMode')) assert(value.animationMode === 'binary' || value.animationMode === 'viseme', 'Choose closed/open or viseme animation.');
   if (Object.hasOwn(value, 'visemes')) object(value.visemes, [], 'Viseme images', [...VISEMES]);
+  if (Object.hasOwn(value, 'motionSounds')) {
+    object(value.motionSounds, [], 'Animation sounds', MOTION_EFFECTS);
+    for (const sound of Object.values(value.motionSounds)) {
+      object(sound, ['file', 'name'], 'Animation sound');
+      assert(typeof sound.file === 'string' && SOUND_ASSET.test(sound.file), 'Sound asset filename is invalid.');
+      text(sound.name, 200, 'Sound name');
+    }
+  }
+  const validateClip = (clip: unknown, kind: string): void => {
+    object(clip, ['frames', 'frameMs', 'durationMs', 'side'], `${kind} animation`, ['effect', 'facing']);
+    number(clip.frameMs, 40, 10000, `${kind} frame duration`, true);
+    number(clip.durationMs, 200, 20000, `${kind} animation duration`, true);
+    assert(clip.side === 'left' || clip.side === 'right', `${kind} animation side must be left or right.`);
+    if (Object.hasOwn(clip, 'effect')) assert(clip.effect === 'walk' || clip.effect === 'smoke' || clip.effect === 'fall-jump', `${kind} animation effect must be walk, smoke or fall-jump.`);
+    if (Object.hasOwn(clip, 'facing')) assert(clip.facing === 'left' || clip.facing === 'right', `${kind} animation facing must be left or right.`);
+  };
   if (Object.hasOwn(value, 'motions')) {
     object(value.motions, [], 'Walking animations', ['enter', 'exit']);
     for (const kind of ['enter', 'exit']) {
       if (!Object.hasOwn(value.motions, kind)) continue;
-      const clip = value.motions[kind];
-      object(clip, ['frames', 'frameMs', 'durationMs', 'side'], `${kind} animation`, ['effect', 'facing']);
-      number(clip.frameMs, 40, 10000, `${kind} frame duration`, true);
-      number(clip.durationMs, 200, 20000, `${kind} animation duration`, true);
-      assert(clip.side === 'left' || clip.side === 'right', `${kind} animation side must be left or right.`);
-      if (Object.hasOwn(clip, 'effect')) assert(clip.effect === 'walk' || clip.effect === 'smoke' || clip.effect === 'fall-jump', `${kind} animation effect must be walk, smoke or fall-jump.`);
-      if (Object.hasOwn(clip, 'facing')) assert(clip.facing === 'left' || clip.facing === 'right', `${kind} animation facing must be left or right.`);
+      validateClip(value.motions[kind], kind);
     }
   }
+  if (Object.hasOwn(value, 'motionVariants')) {
+    object(value.motionVariants, [], 'Additional animations', MOTION_KINDS);
+    for (const kind of MOTION_KINDS) {
+      if (!Object.hasOwn(value.motionVariants, kind)) continue;
+      const choices = value.motionVariants[kind];
+      object(choices, [], `${kind} animation choices`, MOTION_EFFECTS);
+      for (const effect of MOTION_EFFECTS) {
+        if (!Object.hasOwn(choices, effect)) continue;
+        validateClip(choices[effect], kind);
+        const clip = choices[effect] as MotionClip;
+        assert((clip.effect ?? 'walk') === effect, 'Animation choice must match its effect.');
+        const active = (value.motions as Character['motions'])?.[kind];
+        assert(!active || (active.effect ?? 'walk') !== effect, 'The active animation must not be duplicated in additional choices.');
+      }
+    }
+  }
+  const character = value as unknown as Character;
+  const sets: Array<{ label: string; sprites: unknown; minimum: number; motion: boolean }> = [
+    { label: 'closed', sprites: character.closed, minimum: 1, motion: false },
+    { label: 'open', sprites: character.open, minimum: 1, motion: false },
+    ...VISEMES.filter(pose => Object.hasOwn(character.visemes ?? {}, pose)).map(pose => ({ label: pose, sprites: character.visemes![pose], minimum: 1, motion: false }))
+  ];
+  for (const kind of MOTION_KINDS) {
+    const clips = [character.motions?.[kind], ...MOTION_EFFECTS.map(effect => character.motionVariants?.[kind]?.[effect])];
+    for (const clip of clips) if (clip) sets.push({ label: kind, sprites: clip.frames, minimum: allowEmptyWalking || clip.effect && clip.effect !== 'walk' ? 0 : 1, motion: true });
+  }
   const ids = new Set<string>();
-  for (const pose of ['closed', 'open', ...VISEMES, 'enter', 'exit'] as AssetPose[]) {
-    const motion = pose === 'enter' || pose === 'exit';
-    if (pose !== 'closed' && pose !== 'open' && !Object.hasOwn(motion ? value.motions ?? {} : value.visemes ?? {}, pose)) continue;
-    const character = value as unknown as Character;
-    const clip = pose === 'enter' || pose === 'exit' ? character.motions?.[pose] : undefined;
-    const sprites = clip ? clip.frames : spritesForPose(character, pose);
-    const minimum = clip?.effect && clip.effect !== 'walk' ? 0 : 1;
+  for (const { label: pose, sprites, minimum, motion } of sets) {
     assert(Array.isArray(sprites) && sprites.length >= minimum && sprites.length <= 64, motion ? `Add between ${minimum} and 64 ${pose} animation frames.` : `Add between 1 and 64 ${pose}-mouth images.`);
     for (const sprite of sprites) {
       object(sprite, ['id', 'file', 'name', 'x', 'y', 'scale'], 'Sprite');
@@ -101,7 +133,7 @@ export class LibraryStore {
   snapshot(): Library { assert(this.library, 'Character library has not been loaded.'); return clone(this.library); }
   private diskPath(id: string, file: string): string { return path.join(this.dataDir, 'characters', id, 'assets', file); }
   assetPath(id: string, file: string): string | undefined {
-    if (!ID.test(id) || !ASSET.test(file) || !this.assets.has(`${id}/${file}`)) return undefined;
+    if (!ID.test(id) || !(ASSET.test(file) || SOUND_ASSET.test(file)) || !this.assets.has(`${id}/${file}`)) return undefined;
     const filename = this.diskPath(id, file); return existsSync(filename) ? filename : undefined;
   }
   private async persist(next: Library): Promise<void> {
@@ -135,6 +167,11 @@ export class LibraryStore {
           const filename = this.diskPath(character.id, sprite.file); const stat = await fs.lstat(filename); assert(stat.isFile() && !stat.isSymbolicLink(), `Character image ${sprite.name} is missing or invalid.`);
           assert(stat.size >= 45 && stat.size <= MAX_IMAGE_BYTES, `Character image ${sprite.name} has an invalid size.`); validatePng(await fs.readFile(filename)); this.assets.add(`${character.id}/${sprite.file}`);
         }
+        for (const character of parsed.characters) for (const sound of Object.values(character.motionSounds ?? {})) {
+          const filename = this.diskPath(character.id, sound.file); const stat = await fs.lstat(filename);
+          assert(stat.isFile() && !stat.isSymbolicLink() && stat.size <= MAX_SOUND_BYTES, `Character sound ${sound.name} is missing or invalid.`);
+          validateWav(await fs.readFile(filename)); this.assets.add(`${character.id}/${sound.file}`);
+        }
         if (migrated) {
           await fs.copyFile(this.filename, `${this.filename}.v1.bak`, constants.COPYFILE_EXCL).catch(error => {
             if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
@@ -156,6 +193,7 @@ export class LibraryStore {
     return this.serialized(async () => {
       validateCharacter(character); const next = this.snapshot();
       for (const sprite of characterSprites(character)) assert(this.assetPath(character.id, sprite.file), `Image ${sprite.name} has not been imported for this character.`);
+      for (const sound of Object.values(character.motionSounds ?? {})) assert(this.assetPath(character.id, sound.file), `Sound ${sound.name} has not been imported for this character.`);
       const index = next.characters.findIndex(item => item.id === character.id);
       if (index >= 0) next.characters[index] = clone(character); else { assert(next.characters.length < 100, 'Character library is full.'); next.characters.push(clone(character)); }
       validateLibrary(next); await this.persist(next); return this.snapshot();
@@ -222,6 +260,30 @@ export class LibraryStore {
     return this.serialized(async () => { validateSettings(settings); const next = this.snapshot(); next.settings = clone(settings); validateLibrary(next); await this.persist(next); return this.snapshot(); });
   }
   async importImageBuffers(characterId: string, images: Array<{ name: string; png: Buffer }>): Promise<Sprite[]> { return this.serialized(() => this.importBuffers(characterId, images)); }
+  /** Roll back staged animation images, protecting every asset referenced by the saved character. */
+  async discardUnreferencedImages(characterId: string, files: string[]): Promise<void> {
+    return this.serialized(async () => {
+      assert(ID.test(characterId) && files.every(file => ASSET.test(file)), 'Character image path is invalid.');
+      const saved = this.snapshot().characters.find(character => character.id === characterId);
+      const retained = new Set(saved ? characterSprites(saved).map(sprite => sprite.file) : []);
+      for (const file of files) {
+        if (retained.has(file) || !this.assets.has(`${characterId}/${file}`)) continue;
+        await fs.rm(this.diskPath(characterId, file), { force: true });
+        this.assets.delete(`${characterId}/${file}`);
+      }
+    });
+  }
+  async importSoundBuffer(characterId: string, name: string, bytes: Buffer): Promise<MotionSound> {
+    return this.serialized(async () => {
+      assert(typeof characterId === 'string' && ID.test(characterId), 'Character ID must be a UUID.');
+      text(name, 200, 'Sound name'); validateWav(bytes);
+      const file = `${randomUUID()}.wav`;
+      await fs.mkdir(path.dirname(this.diskPath(characterId, file)), { recursive: true });
+      await fs.writeFile(this.diskPath(characterId, file), bytes, { flag: 'wx' });
+      this.assets.add(`${characterId}/${file}`);
+      return { file, name };
+    });
+  }
   /** Failed or cancelled generation can discard new artwork without touching a saved character. */
   async discardCharacterDraft(characterId: string): Promise<void> {
     return this.serialized(async () => {

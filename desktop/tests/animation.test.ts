@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { createAvatarAnimator, createMotionAnimator, drawSmokePuff } from '../animation';
-import type { AvatarState, Character, Sprite, Viseme } from '../shared';
+import type { AvatarState, Character, MotionEffect, Sprite, Viseme } from '../shared';
 
 const sprite = (id: string): Sprite => ({ id, file: `${id}.png`, name: id, x: 0, y: 0, scale: 1 });
 function character(): Character {
@@ -13,6 +13,34 @@ function character(): Character {
 function speech(weights?: Partial<Record<Viseme, number>>, running = true): Pick<AvatarState, 'running' | 'speaking' | 'articulation'> {
   return { running, speaking: running, ...(weights ? { articulation: { audioTimeMs: 0, weights } } : {}) };
 }
+
+test('explicit commands play each saved alternative in studio and serialized OBS without changing defaults', () => {
+  const avatar = character();
+  const clip = (effect: MotionEffect, durationMs: number) => ({ effect, durationMs, frameMs: 100, side: 'right' as const, frames: effect === 'walk' ? [sprite('gait')] : [] });
+  avatar.motions = { enter: clip('smoke', 1000), exit: clip('smoke', 1000) };
+  avatar.motionVariants = { enter: { walk: clip('walk', 1600), 'fall-jump': clip('fall-jump', 800) }, exit: { walk: clip('walk', 1600), 'fall-jump': clip('fall-jump', 800) } };
+  const original = structuredClone(avatar);
+  for (const visible of [true, false]) for (const effect of ['walk', 'fall-jump', 'smoke'] as const) {
+    const studio = createMotionAnimator();
+    const obs = vm.runInNewContext(`(${createMotionAnimator.toString()})()`) as ReturnType<typeof createMotionAnimator>;
+    for (const animator of [studio, obs]) animator.update(avatar, { visible: !visible, sequence: 0 }, 0);
+    const command = { visible, sequence: 1, effect };
+    const start = studio.update(avatar, command, 10); const obsStart = obs.update(avatar, command, 10);
+    assert.equal(start?.effect, effect); assert.equal(start?.durationMs, effect === 'walk' ? 1600 : effect === 'smoke' ? 1000 : 800);
+    assert.deepEqual(JSON.parse(JSON.stringify(obsStart)), start);
+    const middle = studio.frame(410); assert.equal(middle.active, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(obs.frame(410))), middle);
+    if (effect === 'walk') assert.equal(middle.sprite?.id, 'gait');
+    else assert.equal(middle.sprite?.id, avatar.closed[0].id);
+    if (effect === 'smoke') assert.ok(middle.smoke > 0);
+    if (effect === 'fall-jump') assert.ok(middle.offsetY < 0);
+    assert.equal(studio.update(avatar, command, 420), undefined, 'snapshots cannot restart a command');
+    assert.equal(studio.frame(2010).visible, visible);
+  }
+  const defaults = createMotionAnimator(); defaults.update(avatar, { visible: true, sequence: 0 }, 0);
+  assert.equal(defaults.update(avatar, { visible: false, sequence: 1 }, 10)?.effect, 'smoke');
+  assert.deepEqual(avatar, original);
+});
 
 test('binary artwork uses elapsed pose time and survives late animation frames', () => {
   const avatar = character(); avatar.animationMode = 'binary';

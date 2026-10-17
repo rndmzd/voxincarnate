@@ -5,5 +5,5 @@
     "strict": true, "esModuleInterop": true, "skipLibCheck": true,
     "resolveJsonModule": true, "noEmit": true, "types": ["node", "vite/client"]
   },
-  "include": ["desktop/**/*.ts", "desktop/**/*.tsx", "vite.config.ts"]
+  "include": ["desktop/**/*.ts", "desktop/**/*.tsx", "streamdeck/src/**/*.ts", "vite.config.ts"]
 }

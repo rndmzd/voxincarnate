@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Character, CharacterSource, GenerationAvailability, GenerationProgress, MotionEffect, NormalizedRegion } from '../shared';
+import type { Character, CharacterSource, GenerationAvailability, GenerationProgress, MotionSelection as Selection, NormalizedRegion } from '../shared';
 import { MouthRegionEditor } from './MouthRegionEditor';
+import { MotionSelection } from './MotionSelection';
 
 export function CharacterCreator({ onCreated, onManual, onClose, onWorking }: {
   onCreated(character: Character): void | Promise<void>; onManual(): void; onClose(): void; onWorking(working: boolean): void;
@@ -19,8 +20,9 @@ export function CharacterCreator({ onCreated, onManual, onClose, onWorking }: {
   const [entranceSide, setEntranceSide] = useState<'left' | 'right'>('right');
   const [exitSide, setExitSide] = useState<'left' | 'right'>('right');
   const [sameEdge, setSameEdge] = useState(true);
-  const [entranceEffect, setEntranceEffect] = useState<MotionEffect>('walk');
-  const [exitEffect, setExitEffect] = useState<MotionEffect>('walk');
+  const [animations, setAnimations] = useState<Selection>({ enter: ['walk'], exit: ['walk'] });
+  const entranceWalk = animations.enter.includes('walk'), exitWalk = animations.exit.includes('walk');
+  const linkedWalks = entranceWalk && exitWalk && sameEdge;
   const [availability, setAvailability] = useState<GenerationAvailability>();
   const [working, setWorking] = useState(false);
   const [choosing, setChoosing] = useState(false);
@@ -52,7 +54,7 @@ export function CharacterCreator({ onCreated, onManual, onClose, onWorking }: {
     setWorking(true); onWorking(true); setError(''); setCancelling(false); setProgress(undefined);
     try {
       const character = await window.vox!.generateCharacter({ name, speechMode, ...(mode === 'image' ? { sourceId: source?.id, mouthRegion, faceRegion: faceContainsMouth ? faceRegion : undefined } : { description }), style,
-        entranceSide, exitSide: sameEdge ? entranceSide : exitSide, entranceEffect, exitEffect });
+        entranceSide, exitSide: linkedWalks ? entranceSide : exitSide, animations });
       await onCreated(character);
     } catch (error) { setError(error instanceof Error ? error.message : String(error)); }
     finally { setWorking(false); onWorking(false); }
@@ -64,7 +66,7 @@ export function CharacterCreator({ onCreated, onManual, onClose, onWorking }: {
   };
   const faceContainsMouth = !!faceRegion && !!mouthRegion && mouthRegion.x >= faceRegion.x && mouthRegion.y >= faceRegion.y &&
     mouthRegion.x + mouthRegion.width <= faceRegion.x + faceRegion.width + .000001 && mouthRegion.y + mouthRegion.height <= faceRegion.y + faceRegion.height + .000001;
-  const valid = name.trim() && (mode === 'image' ? source && mouthRegion && mouthRegion.width * mouthRegion.height <= .25 &&
+  const valid = name.trim() && animations.enter.length > 0 && animations.exit.length > 0 && (mode === 'image' ? source && mouthRegion && mouthRegion.width * mouthRegion.height <= .25 &&
     (speechMode === 'mouth' || faceContainsMouth && faceRegion!.width * faceRegion!.height <= .65) : description.trim());
   const busy = working || detecting;
   return <section className="character-creator" aria-labelledby="creator-title" aria-busy={busy}>
@@ -88,19 +90,20 @@ export function CharacterCreator({ onCreated, onManual, onClose, onWorking }: {
           <label htmlFor="creator-style">Style and details <span className="optional">optional</span><textarea id="creator-style" value={style} onChange={e => setStyle(e.target.value)} disabled={busy} maxLength={4000} rows={2} placeholder="Keep the original style, outfit, and proportions." /></label></div>
       </div>
       <div className="creator-output"><h3>Your character kit</h3>
-        <ul className="kit-list"><li><strong>Speech animation</strong><span>Nine speech poses with soft edges and matched facial colors. Body texture stays fixed.</span></li><li><strong>Entrance and exit</strong><span>Walk from an edge, appear in smoke, or fall in and jump out.</span></li></ul>
+        <ul className="kit-list"><li><strong>Speech animation</strong><span>Nine speech poses with soft edges and matched facial colors. Body texture stays fixed.</span></li><li><strong>Entrance and exit</strong><span>Choose one or more: walk on and off, jump in and out, or a puff of smoke.</span></li></ul>
         <fieldset className="creator-speech" disabled={busy}><legend>Speech style</legend>
           <label htmlFor="creator-speech-mode">Animate<select id="creator-speech-mode" value={speechMode} onChange={event => setSpeechMode(event.target.value as 'mouth' | 'face')}><option value="mouth">Mouth with a soft blend</option><option value="face">Natural face expressions</option></select></label>
           <p className="helper">{speechMode === 'mouth' ? 'Moves the lips and jaw with surrounding facial context for a smoother blend.' : 'Adds subtle cheek and brow expressions inside the selected face area. Everything outside that area stays fixed.'}</p>
           {mode === 'image' && speechMode === 'face' && !faceContainsMouth && <p className="inline-error" role="status">Select a face area that contains the mouth before generating.</p>}
         </fieldset>
         <fieldset className="creator-motion" disabled={busy}><legend>Entrance and exit</legend>
-          <label htmlFor="creator-entrance-effect">Entrance<select id="creator-entrance-effect" value={entranceEffect} onChange={event => setEntranceEffect(event.target.value as MotionEffect)}><option value="walk">Walk into frame</option><option value="smoke">Appear in a puff of smoke</option><option value="fall-jump">Fall from the top</option></select></label>
-          <label htmlFor="creator-exit-effect">Exit<select id="creator-exit-effect" value={exitEffect} onChange={event => setExitEffect(event.target.value as MotionEffect)}><option value="walk">Walk out of frame</option><option value="smoke">Disappear in a puff of smoke</option><option value="fall-jump">Jump out through the top</option></select></label>
-          <label htmlFor="creator-entrance-side">Enter from<select id="creator-entrance-side" value={entranceSide} disabled={entranceEffect !== 'walk'} onChange={event => setEntranceSide(event.target.value as 'left' | 'right')}><option value="right">Right edge · moves left</option><option value="left">Left edge · moves right</option></select></label>
-          <label className="same-edge"><input type="checkbox" checked={sameEdge} onChange={event => { setSameEdge(event.target.checked); setExitSide(entranceSide); }} />Exit through the same edge</label>
-          {!sameEdge && <label htmlFor="creator-exit-side">Exit toward<select id="creator-exit-side" value={exitSide} disabled={exitEffect !== 'walk'} onChange={event => setExitSide(event.target.value as 'left' | 'right')}><option value="right">Right edge · moves right</option><option value="left">Left edge · moves left</option></select></label>}
-          <p className="helper">{sameEdge ? `Walks enter from the ${entranceSide} and return to that edge. ` : ''}Walking starts just outside the visible frame. Smoke and fall/jump effects use the original artwork.</p>
+          <p className="helper">Select at least one entrance and one exit. You can switch between the generated choices in the builder.</p>
+          <MotionSelection id="creator-motion" selection={animations} onChange={setAnimations} />
+          {(!animations.enter.length || !animations.exit.length) && <p className="inline-error" role="status">Choose at least one entrance and one exit animation.</p>}
+          {entranceWalk && <label htmlFor="creator-entrance-side">Walk on from<select id="creator-entrance-side" value={entranceSide} onChange={event => setEntranceSide(event.target.value as 'left' | 'right')}><option value="right">Right edge · moves left</option><option value="left">Left edge · moves right</option></select></label>}
+          {entranceWalk && exitWalk && <label className="same-edge"><input type="checkbox" checked={sameEdge} onChange={event => { setSameEdge(event.target.checked); setExitSide(entranceSide); }} />Exit through the same edge</label>}
+          {exitWalk && !linkedWalks && <label htmlFor="creator-exit-side">Walk off toward<select id="creator-exit-side" value={exitSide} onChange={event => setExitSide(event.target.value as 'left' | 'right')}><option value="right">Right edge · moves right</option><option value="left">Left edge · moves left</option></select></label>}
+          <p className="helper">{linkedWalks ? `Walks enter from the ${entranceSide} and return to that edge. ` : entranceWalk || exitWalk ? 'Walking starts just outside the visible frame. ' : ''}Jump and smoke use the original artwork. Jump in comes from above; jump out leaves through the top.</p>
         </fieldset>
         <p className="helper">Review every pose and play both clips in the builder. Adjust timing, alignment, and direction before saving.</p>
         <div className="generation-disclosure"><strong>Uses OpenAI · API charges apply</strong><p>{mode === 'image' ? 'Your reference and style notes are sent to OpenAI. Find face automatically uses a separate vision request; review its selection before generating.' : 'OpenAI creates a reference and locates its face before generating animation artwork.'} Speech edits are blended locally inside the selected area. Walking artwork can still need review. Generation can take several minutes.</p></div>
