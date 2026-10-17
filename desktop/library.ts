@@ -161,6 +161,17 @@ export class LibraryStore {
       validateLibrary(next); await this.persist(next); return this.snapshot();
     });
   }
+  async renameCharacter(characterId: string, name: string): Promise<Library> {
+    return this.serialized(async () => {
+      assert(typeof characterId === 'string' && ID.test(characterId), 'Character ID must be a UUID.');
+      text(name, 120, 'Character name');
+      const next = this.snapshot();
+      const character = next.characters.find(item => item.id === characterId);
+      assert(character, 'Character does not exist.');
+      character.name = name.trim();
+      validateLibrary(next); await this.persist(next); return this.snapshot();
+    });
+  }
   async deleteCharacter(characterId: string): Promise<Library> {
     return this.serialized(async () => {
       assert(typeof characterId === 'string' && ID.test(characterId), 'Character ID must be a UUID.');

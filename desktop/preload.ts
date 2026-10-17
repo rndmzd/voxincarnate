@@ -3,6 +3,7 @@ import type { DesktopApi, BrowserStatus, GenerationProgress } from './shared';
 const api: DesktopApi = {
   bootstrap: () => ipcRenderer.invoke('app:bootstrap'),
   saveCharacter: character => ipcRenderer.invoke('character:save', character),
+  renameCharacter: (id, name) => ipcRenderer.invoke('character:rename', id, name),
   deleteCharacter: id => ipcRenderer.invoke('character:delete', id),
   createVisemeDemo: () => ipcRenderer.invoke('character:demo'),
   importImages: (id, pose) => ipcRenderer.invoke('character:import', id, pose),

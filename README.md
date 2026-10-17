@@ -50,6 +50,8 @@ The image path makes one speech-edit request plus one edit per selected walking 
 
 Imports accept PNG and JPEG, up to 16 MB and 4096 pixels per dimension, with up to 24 files per import. A saved character supports up to 64 images per mouth pose. Imported files are decoded, normalized to PNG, and copied into application storage; moving the original files afterward does not break the character.
 
+Use the pencil button beside a character in the library to rename it. Enter its new name and choose **Save name**, or press Enter. **Cancel** or Escape keeps the existing name. Renaming saves immediately and preserves artwork, OBS URLs, and any other unsaved edits.
+
 Use the trash button beside a character in the library to delete it, then confirm. Deleting removes its saved artwork from application storage and clears its connected OBS sources. Original imported files are untouched. If it was selected, the studio switches to another saved character. Keep at least one character in the library; add another before deleting the last one.
 
 Use transparent PNGs for a cutout avatar. The overlay canvas is transparent, but opaque pixels already in an image remain visible. The bundled sample sprites retain their image backgrounds; the application does not automatically remove them. Images use their natural pixel dimensions, centered on the character canvas, with each frame's saved offset and scale.

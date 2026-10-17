@@ -286,6 +286,9 @@ function handlers(): void {
   ipcMain.handle('character:save', async (e, character: Character) => {
     assertTrusted(e); await store.saveCharacter(character); generatedDrafts.delete(character.id); overlay.refresh(); return bootstrap();
   });
+  ipcMain.handle('character:rename', async (e, id: string, name: string) => {
+    assertTrusted(e); await store.renameCharacter(id, name); overlay.refresh(); return bootstrap();
+  });
   ipcMain.handle('character:delete', async (e, id: string) => {
     assertTrusted(e); await store.deleteCharacter(id); overlay.refresh(); return bootstrap();
   });

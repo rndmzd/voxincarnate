@@ -285,6 +285,18 @@ The packaged `release/win-unpacked/Voxincarnate.exe` passed deletion UI/IPC chec
 
 All 14 compiled files in the packaged archive matched the production build byte-for-byte; the nine demo PNGs also matched their sources, and the bundled inference assets and third-party notices were present. The ZIP's application archive matched that tested unpacked package. The executable reports product version 0.3.0.0. Distribution assets are `Voxincarnate-0.3.0-x64.exe`, `Voxincarnate-0.3.0-x64.zip`, and `SHA256SUMS.txt`. The executable and installer are unsigned. A normally running app was left open; isolated smoke profiles temporarily used a free overlay port instead of its occupied default port.
 
+## Version 0.3.1 release validation (2026-10-16)
+
+`npm run dist` passed strict TypeScript, all **138 automated tests**, the production build, and Windows x64 NSIS/ZIP packaging. Four new storage regressions cover renaming active and inactive characters, restart persistence, invalid names and IDs, concurrent writes, and failed commits without losing saved data or artwork.
+
+The editor groups the builder directly beneath a shorter preview, independently of the audio/OBS inspector. Rendered checks at 1920x1080, 1440x960, and 1120x740 verified a 24-pixel preview-to-builder gap, responsive fields, accessible artwork/alignment controls, and the sticky Save action. The inline library rename form passed Enter/Escape/Cancel, blank-name rejection, error recovery, focus return, and preservation of unsaved character and audio settings.
+
+A separate isolated Electron harness loaded the **actual packaged main, preload, and renderer from app.asar**, using the real trusted IPC, LibraryStore, and overlay server. At 1440x960 and 1120x740 it verified editor spacing, active/inactive renaming, trimming, unchanged IDs/artwork/OBS URLs, and that only names were saved while other draft edits stayed unsaved. A second process loaded the same isolated profile and restored both names. This harness used the installed Electron runtime, rather than launching the packaged executable. Reports are `.qa/windows-v031/packaged-features.json` and `.qa/windows-v031/packaged-feature-restart.json`.
+
+The **packaged executable itself** passed tab-only assistant-audio isolation, nine-pose UI, and transparent-overlay rendering with a separate isolated smoke profile. No physical microphone was opened and no paid generation requests were made. Its report is `.qa/windows-v031/exe-smoke/.qa/smoke-tab.json`.
+
+All 14 compiled files and nine bundled demo PNGs matched their sources; inference assets and third-party notices were present. The portable ZIP's executable and application archive matched the tested unpacked package byte-for-byte. The executable reports product version 0.3.1.0. Distribution assets are `Voxincarnate-0.3.1-x64.exe`, `Voxincarnate-0.3.1-x64.zip`, and `SHA256SUMS.txt`; checksums and package verification are recorded under `.qa/windows-v031/`. Packages are unsigned and have no automatic updater. Clean-machine installation and a new live physical audio/OBS session were not run for this release.
+
 ## Not run
 
 - Google/Apple sign-in, interruption, and long-session reconnection. A live Maya call and verified Focusrite input were observed as described above.
