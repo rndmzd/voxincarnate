@@ -168,6 +168,51 @@ describe('AudioEngine capture lifecycle', { concurrency: false }, () => {
     assert.ok(closure.articulation!.audioTimeMs > vowel.articulation!.audioTimeMs);
   });
 
+  for (const mode of ['direct', 'browser'] as const) {
+    it(`returns ${mode} capture to rest below the visible threshold despite ongoing mouth predictions`, async () => {
+      const detector = { ...DEFAULT_DETECTOR, openThresholdDb: -38, closeThresholdDb: -45, holdMs: 60, attackMs: 0, releaseMs: 0 };
+      engine.setSettings(detector);
+      const states: Array<import('../audio/engine').AudioEngineState> = [];
+      const ended: string[] = [];
+      const publish = (state: import('../audio/engine').AudioEngineState) => states.push(state);
+      const end = (reason: string) => ended.push(reason);
+      if (mode === 'direct') await engine.startDirect('mic', publish, end);
+      else await engine.startBrowser(publish, end);
+      const [rms, lips] = nodes;
+      let block = 0;
+      const measure = (db: number) => {
+        // Keep sending fresh open-mouth predictions: only the configured energy
+        // threshold and hold should decide whether capture is speaking or idle.
+        lips.event({ event: 'viseme', viseme: 0, t: ++block / 30 });
+        rms.measure(10 ** (db / 20));
+        return states.at(-1)!;
+      };
+      for (let i = 0; i < 4; i++) measure(-30);
+      assert.equal(states.at(-1)!.speaking, true);
+      assert.ok(states.at(-1)!.articulation!.weights.D! > 0.9);
+      assert.equal(measure(-42).speaking, true, 'The first 33 ms block still falls within the 60 ms mouth hold.');
+      let idle = measure(-42);
+      assert.equal(idle.speaking, false, 'Nonzero background noise below -38 dB must close the mouth after the hold.');
+      assert.ok(Math.abs(idle.db - -42) < 1e-6);
+      assert.deepEqual(idle.articulation!.weights, { X: 1 });
+      for (let i = 0; i < 3; i++) idle = measure(-42);
+      assert.equal(idle.speaking, false);
+      assert.deepEqual(idle.articulation!.weights, { X: 1 });
+
+      assert.equal(measure(-36).speaking, true, 'New speech above the visible threshold reopens the mouth.');
+      assert.ok(measure(-36).articulation!.weights.D! > 0.8);
+      engine.setSettings({ ...detector, openThresholdDb: -34, closeThresholdDb: -41 });
+      assert.equal(measure(-36).speaking, true);
+      idle = measure(-36);
+      assert.equal(idle.speaking, false, 'A live threshold change also closes after the configured hold.');
+      assert.deepEqual(idle.articulation!.weights, { X: 1 });
+      assert.deepEqual(ended, []);
+      assert.equal(track.readyState, 'live');
+      assert.equal(contexts[0].state, 'running');
+      assert.equal(contexts.length, 1, 'Returning to idle does not restart capture.');
+    });
+  }
+
   it('clears articulation on stop and ignores queued old-generation viseme messages', async () => {
     const states: Array<import('../audio/engine').AudioEngineState> = [];
     await engine.startDirect('mic', state => states.push(state), () => {});

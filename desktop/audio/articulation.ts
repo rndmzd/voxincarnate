@@ -50,7 +50,7 @@ export class ArticulationTracker {
     const durationMs = cursor - this.lastAudioTimeMs;
     this.lastAudioTimeMs = cursor;
     if (!active) {
-      // The app's existing RMS hysteresis is the sole activity gate. Keep its
+      // The app's RMS threshold and hold are the sole activity gate. Keep its
       // silence decision immediate without resetting the acquisition clock.
       this.weights = { X: 1 };
       this.target = 'X';

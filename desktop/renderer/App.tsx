@@ -476,7 +476,7 @@ export default function App() {
             {visemeMode && <p className="helper">Lip sync runs locally on this computer. {completePoses}/9 mouth poses available.</p>}
             {lipSyncError && visemeMode && <p className="inline-error" role="status">{lipSyncError} Using closed/open animation. Stop audio and start again to retry.</p>}
             <details className="audio-tuning"><summary>Audio response</summary>
-              <label htmlFor="sensitivity">Mouth opens above <span>{settings.detector.openThresholdDb} dB</span></label><input id="sensitivity" type="range" min="-60" max="-10" value={settings.detector.openThresholdDb} onChange={e => { const db = Number(e.target.value); patchDetector({ openThresholdDb: db, closeThresholdDb: db - 7 }); }} />
+              <label htmlFor="sensitivity">Mouth threshold <span>{settings.detector.openThresholdDb} dB</span></label><input id="sensitivity" type="range" min="-60" max="-10" value={settings.detector.openThresholdDb} onChange={e => { const db = Number(e.target.value); patchDetector({ openThresholdDb: db, closeThresholdDb: db }); }} />
               <label htmlFor="gain">Input gain <span>{settings.detector.gain.toFixed(1)}×</span></label><input id="gain" type="range" min="0.2" max="5" step="0.1" value={settings.detector.gain} onChange={e => patchDetector({ gain: Number(e.target.value) })} />
               <label htmlFor="hold">Mouth hold <span>{settings.detector.holdMs} ms</span></label><input id="hold" type="range" min="0" max="300" step="10" value={settings.detector.holdMs} onChange={e => patchDetector({ holdMs: Number(e.target.value) })} />
             </details>

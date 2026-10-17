@@ -52,6 +52,14 @@ controls idle/noise behavior; an active voice can display A rather than being
 forced to keep its mouth open. The audio branch emits no audible output. Normal
 Sesame playback remains unchanged, and no compensating delay is introduced.
 
+**Mouth threshold** controls both speech activation and the return to rest. Once
+the displayed input level stays below it for **Mouth hold**, the avatar becomes
+Idle and uses X/rest (or the closed-mouth fallback). Shorter pauses retain speech;
+audio above the threshold resets the hold. Older libraries with a separate, lower
+closing threshold use the visible mouth threshold too.
+The default hold is 250 ms for new settings. Existing saved hold values are kept;
+change **Mouth hold** and save to apply a different duration to your current setup.
+
 The [HeadAudio author](https://github.com/met4citizen/HeadAudio) reports about
 50-100 ms of processing latency. Capture, message delivery, and rendering add to
 that. Evaluate the full path with an OBS recording before choosing an audio sync
