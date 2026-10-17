@@ -6,7 +6,7 @@ const FLOOR_DB = -120;
 const finite = (value: number, fallback: number) => Number.isFinite(value) ? value : fallback;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-/** Energy envelope and hysteresis, independent of any audio device or browser API. */
+/** Energy envelope and speech hold, independent of any audio device or browser API. */
 export class EnvelopeDetector {
   private settings!: DetectorSettings;
   private level = 0;
@@ -20,10 +20,12 @@ export class EnvelopeDetector {
     this.settings = {
       gain: clamp(finite(settings.gain, 1), 0, 32),
       openThresholdDb,
-      closeThresholdDb: Math.min(openThresholdDb, clamp(finite(settings.closeThresholdDb, -45), -110, 0)),
+      // Older libraries have a hidden, lower close threshold. The visible mouth
+      // threshold now gates both directions; holdMs handles brief speech pauses.
+      closeThresholdDb: openThresholdDb,
       attackMs: clamp(finite(settings.attackMs, 25), 0, 2000),
       releaseMs: clamp(finite(settings.releaseMs, 90), 0, 5000),
-      holdMs: clamp(finite(settings.holdMs, 90), 0, 5000)
+      holdMs: clamp(finite(settings.holdMs, 250), 0, 5000)
     };
   }
 

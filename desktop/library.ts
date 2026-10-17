@@ -71,7 +71,7 @@ export function validateSettings(value: unknown): asserts value is AppSettings {
   object(value.detector, ['gain', 'openThresholdDb', 'closeThresholdDb', 'attackMs', 'releaseMs', 'holdMs'], 'Detector');
   const d = value.detector;
   number(d.gain, 0.1, 10, 'Gain'); number(d.openThresholdDb, -90, 0, 'Open threshold'); number(d.closeThresholdDb, -100, 0, 'Close threshold');
-  assert(d.closeThresholdDb < d.openThresholdDb, 'Close threshold must be lower than open threshold.');
+  assert(d.closeThresholdDb <= d.openThresholdDb, 'Close threshold must be at or below open threshold.');
   for (const key of ['attackMs', 'releaseMs', 'holdMs']) number(d[key], 0, 5000, key);
 }
 function validateLibrary(value: unknown, allowLegacy = false): asserts value is Library {

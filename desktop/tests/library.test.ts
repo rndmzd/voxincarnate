@@ -53,12 +53,25 @@ test('corrupt or unsupported configuration is preserved and reported rather than
   await assert.rejects(new LibraryStore(path.join(f.root, 'data'), f.legacy).load(), /original file was preserved/);
   assert.equal(await fs.readFile(f.store.filename, 'utf8'), original); assert.ok((await fs.readdir(path.dirname(f.store.filename))).some(name => name.includes('.invalid-')));
 });
-test('validates detector hysteresis, saved ports and unsupported schema fields', async t => {
+test('validates detector thresholds, saved ports and unsupported schema fields', async t => {
   const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true })); const initial = await f.store.load();
-  await assert.rejects(f.store.saveSettings({ ...initial.settings, detector: { ...initial.settings.detector, closeThresholdDb: -20 } }), /lower than open/);
+  await assert.rejects(f.store.saveSettings({ ...initial.settings, detector: { ...initial.settings.detector, closeThresholdDb: -20 } }), /at or below open/);
   await assert.rejects(f.store.saveSettings({ ...initial.settings, overlayPort: 80 }), /Overlay port/);
   await assert.rejects(f.store.saveSettings({ ...initial.settings, assistantUrl: 'file:///C:/private' }), /HTTPS or HTTP/);
   await assert.rejects(f.store.saveCharacter({ ...initial.characters[0], unknown: 'unsupported' } as never), /unsupported or missing/);
+});
+
+test('saves a shared mouth threshold and still loads legacy separate thresholds', async t => {
+  const f = await fixture(); t.after(() => fs.rm(f.root, { recursive: true, force: true })); const initial = await f.store.load();
+  const detector = { ...initial.settings.detector, openThresholdDb: -38, closeThresholdDb: -38 };
+  await f.store.saveSettings({ ...initial.settings, detector });
+  let restored = await new LibraryStore(path.join(f.root, 'data'), f.legacy).load();
+  assert.deepEqual(restored.settings.detector, detector);
+  await f.store.saveSettings({ ...initial.settings, detector: { ...detector, closeThresholdDb: -45 } });
+  restored = await new LibraryStore(path.join(f.root, 'data'), f.legacy).load();
+  assert.equal(restored.settings.detector.openThresholdDb, -38);
+  assert.equal(restored.settings.detector.closeThresholdDb, -45);
+  assert.equal(restored.token, initial.token);
 });
 
 test('migrates a v1 library only after validating artwork and retains the exact original backup', async t => {

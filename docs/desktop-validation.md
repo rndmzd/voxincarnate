@@ -297,6 +297,67 @@ The **packaged executable itself** passed tab-only assistant-audio isolation, ni
 
 All 14 compiled files and nine bundled demo PNGs matched their sources; inference assets and third-party notices were present. The portable ZIP's executable and application archive matched the tested unpacked package byte-for-byte. The executable reports product version 0.3.1.0. Distribution assets are `Voxincarnate-0.3.1-x64.exe`, `Voxincarnate-0.3.1-x64.zip`, and `SHA256SUMS.txt`; checksums and package verification are recorded under `.qa/windows-v031/`. Packages are unsigned and have no automatic updater. Clean-machine installation and a new live physical audio/OBS session were not run for this release.
 
+## Mouth threshold return-to-idle fix (2026-10-16, source build)
+
+The visible mouth threshold now gates both speech activation and the return to
+rest, with the existing mouth hold covering brief pauses. Previously the hidden
+closing threshold stayed 7 dB below the slider, so a -38 dB setting could remain
+Speaking indefinitely at -42 dB. Existing libraries with separate closing
+thresholds load without a migration and use the visible threshold at runtime.
+
+`npm run check` passed TypeScript checking, all 143 automated tests, and the
+production build. Regressions cover nonzero background noise, hold timing and
+reset, live threshold edits, direct/browser capture returning to X despite fresh
+open-mouth predictions, and saving/reloading equal thresholds while retaining
+legacy library support.
+
+An isolated, hidden Electron harness loaded the compiled main, preload, renderer,
+real audio worklets, and local lip-sync model. With production attack/release,
+60 ms hold, and legacy -38/-45 dB settings, a generated Web Audio stream at -30 dB
+showed Speaking; lowering it to -42 dB showed Idle and the correct closed/X image
+in both binary and viseme modes. The actual OBS browser pages selected the same
+rest artwork. Capture remained running with a live track, and louder input
+reopened the mouth. The real UI slider saved equal thresholds to disk and retained
+them after reload. Screenshots were inspected visually. Evidence is recorded in
+`.qa/mouth-threshold/rendered.json`, `binary-idle.png`, and `viseme-idle.png`.
+
+This used synthetic local audio, without a physical Focusrite input or the OBS
+application. It validates the source build; the installed release was not updated.
+
+## Version 0.3.2 release validation (2026-10-16)
+
+`npm run dist` passed strict TypeScript checking, all 143 automated tests, the
+production build, and Windows x64 NSIS/ZIP packaging. The mouth threshold now
+controls the return to idle without the hidden 7 dB closing gap. New settings
+default to a 250 ms mouth hold, including the detector's invalid-value fallback;
+existing saved hold durations are retained.
+
+An isolated Electron harness loaded the actual packaged main, preload, renderer,
+worklets, and local model from `release/win-unpacked/resources/app.asar`. Generated
+audio at -30 dB showed Speaking, then -42 dB returned to Idle and closed/X artwork
+with a -38 dB threshold and a legacy -45 dB close setting. Binary and viseme modes,
+their actual OBS browser pages, capture continuity, louder-input reopening, and
+equal-threshold UI save/reload all passed. A fresh profile initialized through the
+packaged LibraryStore persisted and displayed the 250 ms default. The package
+metadata and UI report 0.3.2. Reports are
+`.qa/mouth-threshold/packaged-rendered.json` and
+`.qa/mouth-threshold/packaged-fresh-default.json`; their screenshots were inspected.
+
+The packaged executable itself passed tab-only assistant-audio isolation,
+nine-pose UI, and transparent-overlay checks in a separate isolated profile.
+Its report is `.qa/windows-v032/exe-smoke/.qa/smoke-tab.json`.
+
+All 14 compiled files and nine demo PNGs matched the package byte-for-byte;
+bundled inference assets and third-party notices were verified. The portable ZIP's
+executable and application archive matched the tested unpacked application.
+The executable reports product version 0.3.2.0. Distribution artifacts are
+`Voxincarnate-0.3.2-x64.exe`, `Voxincarnate-0.3.2-x64.zip`, and `SHA256SUMS.txt`;
+artifact verification and checksums are under `.qa/windows-v032/`.
+
+These checks used synthetic local audio without a physical microphone or paid
+generation requests. A new live Focusrite/assistant/OBS session and clean-machine
+installation were not run. Packages remain unsigned and have no automatic updater.
+
 ## Not run
 
 - Google/Apple sign-in, interruption, and long-session reconnection. A live Maya call and verified Focusrite input were observed as described above.

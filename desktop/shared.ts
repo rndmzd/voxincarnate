@@ -38,6 +38,8 @@ export function characterSprites(character: Character): Sprite[] {
     ...(character.motions?.enter?.frames ?? []), ...(character.motions?.exit?.frames ?? [])];
 }
 export interface DetectorSettings {
+  // closeThresholdDb is retained for compatibility with existing saved libraries.
+  // Speech activity uses openThresholdDb for both opening and returning to rest.
   gain: number; openThresholdDb: number; closeThresholdDb: number;
   attackMs: number; releaseMs: number; holdMs: number;
 }
@@ -93,8 +95,8 @@ export interface DesktopApi {
   copy(text: string): Promise<void>;
 }
 export const DEFAULT_DETECTOR: DetectorSettings = {
-  gain: 1, openThresholdDb: -38, closeThresholdDb: -45,
-  attackMs: 25, releaseMs: 90, holdMs: 90
+  gain: 1, openThresholdDb: -38, closeThresholdDb: -38,
+  attackMs: 25, releaseMs: 90, holdMs: 250
 };
 export function overlayUrl(data: Bootstrap, id: string): string {
   return `${data.overlayOrigin}/overlay/${encodeURIComponent(id)}?token=${data.token}`;

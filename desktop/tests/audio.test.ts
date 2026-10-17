@@ -26,15 +26,38 @@ describe('EnvelopeDetector', () => {
     assert.ok(detector.process([block(0.0008)], 48000).level < 0.002);
   });
 
-  it('uses hysteresis and a hold before closing, with new speech resetting the hold', () => {
+  it('uses the visible threshold and a hold before closing, with new speech resetting the hold', () => {
     const detector = new EnvelopeDetector(settings({ openThresholdDb: -30, closeThresholdDb: -40, holdMs: 30 }));
     assert.equal(detector.processRms(0.02, 10).speaking, false); // -34 dB cannot open.
     assert.equal(detector.processRms(0.1, 10).speaking, true);
-    assert.equal(detector.processRms(0.02, 10).speaking, true); // Hysteresis keeps it open.
-    assert.equal(detector.processRms(0, 20).speaking, true);
-    assert.equal(detector.processRms(0.02, 10).speaking, true); // Clears quiet timer.
-    assert.equal(detector.processRms(0, 20).speaking, true);
-    assert.equal(detector.processRms(0, 10).speaking, false);
+    assert.equal(detector.processRms(0.02, 20).speaking, true); // Brief pause stays open.
+    assert.equal(detector.processRms(0.1, 10).speaking, true); // New speech clears quiet timer.
+    assert.equal(detector.processRms(0.02, 20).speaking, true);
+    assert.equal(detector.processRms(0.02, 10).speaking, false);
+  });
+
+  it('returns to rest at -42 dB below a -38 dB threshold despite a legacy -45 dB close setting', () => {
+    const detector = new EnvelopeDetector(settings({ openThresholdDb: -38, closeThresholdDb: -45, holdMs: 60 }));
+    const background = 10 ** (-42 / 20);
+    assert.equal(detector.processRms(0.1, 10).speaking, true);
+    assert.equal(detector.processRms(background, 20).speaking, true);
+    assert.equal(detector.processRms(background, 30).speaking, true);
+    const resting = detector.processRms(background, 10);
+    closeTo(resting.db, -42);
+    assert.equal(resting.speaking, false);
+    for (let i = 0; i < 250; i++) assert.equal(detector.processRms(background, 20).speaking, false);
+    assert.equal(detector.processRms(0.1, 10).speaking, true);
+  });
+
+  it('uses threshold edits during speech without restarting the detector', () => {
+    const detector = new EnvelopeDetector(settings({ openThresholdDb: -50, closeThresholdDb: -57, holdMs: 60 }));
+    const background = 10 ** (-42 / 20);
+    assert.equal(detector.processRms(background, 100).speaking, true);
+    detector.update(settings({ openThresholdDb: -38, closeThresholdDb: -45, holdMs: 60 }));
+    assert.equal(detector.processRms(background, 50).speaking, true);
+    assert.equal(detector.processRms(background, 10).speaking, false);
+    detector.update(settings({ openThresholdDb: -50, closeThresholdDb: -57, holdMs: 60 }));
+    assert.equal(detector.processRms(background, 10).speaking, true);
   });
 
   it('calculates attack and release from elapsed sample duration, independent of block size', () => {
