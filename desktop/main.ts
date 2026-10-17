@@ -1,22 +1,31 @@
-import { app, BrowserWindow, WebContentsView, ipcMain, dialog, nativeImage, clipboard, session } from 'electron';
+import { app, BrowserWindow, WebContentsView, ipcMain, dialog, nativeImage, clipboard, session, globalShortcut, shell } from 'electron';
 import type { IpcMainInvokeEvent, IpcMainEvent, Rectangle } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { LibraryStore } from './library';
+import { LibraryStore, validateCharacter } from './library';
 import { OverlayServer } from './overlay';
 import { runSmoke } from './smoke';
-import { overlayUrl, VISEMES, VISEME_LABELS } from './shared';
-import type { AppSettings, AvatarState, Bootstrap, BrowserStatus, Character, CharacterGenerationRequest, GenerationProgress } from './shared';
+import { overlayUrl, VISEMES, VISEME_LABELS, SOUND_PRESETS, MOTION_KINDS, characterSprites } from './shared';
+import { MAX_SOUND_BYTES } from './wav';
+import type { AppSettings, AvatarState, Bootstrap, BrowserStatus, Character, CharacterGenerationRequest, CharacterMotionGenerationRequest, GenerationProgress, MotionEffect, Sprite } from './shared';
+import { addMotionChoices, generatedMotionChoices, missingMotionSelection, validateMotionSelection } from './character-motions';
 import { CharacterGenerationService, type GeneratedAtlas } from './character-generation';
 import { compositeSpeechPixels, contextAroundRegion, fitSpriteToCanvas, padSpritePixels, regionToPixels, validFaceRegion, validMouthRegion } from './character-compositing';
 import { createCharacterFixtureFetch, runCharacterCreationSmoke } from './character-creation-smoke';
 import { runCharacterDeletionSmoke } from './character-deletion-smoke';
+import { runMotionSoundSmoke } from './motion-sound-smoke';
+import { runControlsSmoke } from './controls-smoke';
+import { Controls } from './controls';
+import { ControlConfigStore } from './control-config';
+import type { ControlCommand, ControlResult, ControlRuntime } from './control-protocol';
+import { hasMotion } from './character-motions';
+import { MOTION_EFFECTS } from './shared';
 
 const smoke = process.argv.includes('--smoke-test');
 const tabOnly = process.argv.includes('--tab-capture-only');
 if (smoke) {
-  app.setPath('userData', path.join(process.cwd(), '.qa', process.argv.includes('--character-delete-check') ? 'character-delete-profile' : 'profile'));
+  app.setPath('userData', path.join(process.cwd(), '.qa', process.argv.includes('--controls-check') ? 'control-profile' : process.argv.includes('--motion-sound-check') ? 'motion-sound-profile' : process.argv.includes('--character-delete-check') ? 'character-delete-profile' : 'profile'));
   if (!tabOnly) app.commandLine.appendSwitch('use-fake-device-for-media-stream');
   app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
   app.disableHardwareAcceleration();
@@ -28,6 +37,7 @@ let assistant: WebContentsView | undefined;
 let store: LibraryStore;
 let overlay: OverlayServer;
 let overlayOrigin = '';
+let controls: Controls | undefined;
 let browserEnabled = false;
 let browserDeviceId = '';
 let browserAllowedOrigin = '';
@@ -39,6 +49,11 @@ let sourceImage: { id: string; bytes: Buffer; name: string } | undefined;
 let generationController: AbortController | undefined;
 let generationTask: Promise<unknown> | undefined;
 const generatedDrafts = new Set<string>();
+const generatedMotionAssets = new Map<string, Set<string>>();
+async function discardMotionAssets(id: string): Promise<void> {
+  const files = generatedMotionAssets.get(id);
+  if (files) { await store.discardUnreferencedImages(id, [...files]); generatedMotionAssets.delete(id); }
+}
 app.on('second-instance', () => {
   if (!window || window.isDestroyed()) return;
   if (window.isMinimized()) window.restore();
@@ -149,6 +164,8 @@ async function generateCharacter(request: CharacterGenerationRequest): Promise<C
   for (const key of ['description', 'style'] as const) if (request[key] !== undefined && (typeof request[key] !== 'string' || request[key]!.length > 4000)) throw new Error('Keep the character description and style under 4000 characters each.');
   for (const key of ['entranceSide', 'exitSide'] as const) if (request[key] !== undefined && !['left', 'right'].includes(request[key]!)) throw new Error('Choose the left or right edge.');
   for (const key of ['entranceEffect', 'exitEffect'] as const) if (request[key] !== undefined && !['walk', 'smoke', 'fall-jump'].includes(request[key]!)) throw new Error('Choose a supported entrance or exit.');
+  const animations = request.animations ?? { enter: [request.entranceEffect || 'walk'], exit: [request.exitEffect || 'walk'] };
+  validateMotionSelection(animations, true);
   if (request.speechMode !== undefined && !['mouth', 'face'].includes(request.speechMode)) throw new Error('Choose mouth animation or face expressions.');
   if (request.mouthRegion !== undefined && !validMouthRegion(request.mouthRegion)) throw new Error('Choose a mouth area within the image, covering no more than 25% of it.');
   if (request.faceRegion !== undefined && !validFaceRegion(request.faceRegion)) throw new Error('Choose a face area within the image, covering no more than 65% of it.');
@@ -157,9 +174,8 @@ async function generateCharacter(request: CharacterGenerationRequest): Promise<C
   const controller = new AbortController(); generationController = controller;
   const id = randomUUID();
   const source = request.sourceId ? sourceImage!.bytes : undefined;
-  const entranceEffect = request.entranceEffect || 'walk', exitEffect = request.exitEffect || 'walk';
   const entranceSide = request.entranceSide || 'right', exitSide = request.exitSide || entranceSide;
-  const walkKinds = (['enter', 'exit'] as const).filter(kind => (kind === 'enter' ? entranceEffect : exitEffect) === 'walk');
+  const walkKinds = MOTION_KINDS.filter(kind => animations[kind].includes('walk'));
   const total = (source ? 0 : 2) + (!request.mouthRegion || (request.speechMode === 'face' && !request.faceRegion) ? 1 : 0) + 2 + walkKinds.length;
   let completed = 0;
   const progress = (stage: string) => {
@@ -216,16 +232,67 @@ async function generateCharacter(request: CharacterGenerationRequest): Promise<C
       ...enterImages, ...exitImages];
     const sprites = await store.importImageBuffers(id, images);
     controller.signal.throwIfAborted();
-    const character: Character = { id, name: request.name.trim(), width, height, frameMs: 120,
+    const character = addMotionChoices({ id, name: request.name.trim(), width, height, frameMs: 120,
       animationMode: 'viseme', closed: [sprites[9]], open: [sprites[10]],
-      visemes: Object.fromEntries(VISEMES.map((pose, index) => [pose, [sprites[index]]])),
-      motions: { enter: { frames: sprites.slice(11, 11 + enterImages.length), frameMs: 120, durationMs: entranceEffect === 'walk' ? 1800 : 1000, side: entranceSide, effect: entranceEffect, facing: 'right' },
-        exit: { frames: sprites.slice(11 + enterImages.length), frameMs: 120, durationMs: exitEffect === 'walk' ? 1800 : 1000, side: exitSide, effect: exitEffect, facing: 'right' } } };
+      visemes: Object.fromEntries(VISEMES.map((pose, index) => [pose, [sprites[index]]])) },
+      generatedMotionChoices(animations, { enter: sprites.slice(11, 11 + enterImages.length), exit: sprites.slice(11 + enterImages.length) }, entranceSide, exitSide));
     generatedDrafts.add(id);
     return character;
   } catch (error) {
     await store.discardCharacterDraft(id).catch(() => undefined);
     if (controller.signal.aborted) throw new Error('Generation cancelled. Requests already sent to OpenAI may still be billed.');
+    throw error;
+  } finally { if (generationController === controller) generationController = undefined; }
+}
+
+async function generateCharacterMotions(request: CharacterMotionGenerationRequest): Promise<Character> {
+  if (generationController) throw new Error('Wait for the current generation step to finish.');
+  if (!request) throw new Error('Choose a character and animations first.');
+  validateCharacter(request.character, true);
+  const character = { ...request.character, motions: { ...request.character.motions } };
+  // The manual builder can select walking before it has any frames. Generation fills that missing choice.
+  for (const kind of MOTION_KINDS) {
+    const clip = character.motions[kind];
+    if (clip && (clip.effect ?? 'walk') === 'walk' && Array.isArray(clip.frames) && !clip.frames.length) delete character.motions[kind];
+  }
+  validateCharacter(character);
+  if (!store.snapshot().characters.some(saved => saved.id === character.id) && !generatedDrafts.has(character.id)) {
+    throw new Error('Save this character before adding animations.');
+  }
+  const animations = missingMotionSelection(character, request.animations);
+  for (const sprite of characterSprites(character)) if (!store.assetPath(character.id, sprite.file)) throw new Error('Character artwork is missing. Reimport it before generating animations.');
+  const walkKinds = MOTION_KINDS.filter(kind => animations[kind].includes('walk'));
+  if (walkKinds.length && !generator.configured) throw new Error('OpenAI is unavailable. Restart with OPENAI_API_KEY to generate walking artwork. Smoke and jump are available locally.');
+  const controller = new AbortController(); generationController = controller;
+  let sprites: Sprite[] = [];
+  let completed = 0;
+  const progress = (stage: string) => {
+    if (!window.isDestroyed()) window.webContents.send('generation:progress', { stage, completed: completed++, total: walkKinds.length + 1 } satisfies GenerationProgress);
+  };
+  try {
+    const reference = character.visemes?.X?.[0] ?? character.closed[0];
+    const walks = walkKinds.length ? await generator.generateWalkAtlases({ bytes: await fs.readFile(store.assetPath(character.id, reference.file)!), mimeType: 'image/png' }, '', {
+      signal: controller.signal, kinds: walkKinds,
+      onProgress: kind => progress(kind === 'enter' ? 'Creating the walk-on animation' : 'Creating the walk-off animation')
+    }) : {};
+    controller.signal.throwIfAborted();
+    const enterImages = walks.enter ? splitGeneratedAtlas(walks.enter, character.width, character.height, true).map((image, i) => ({ ...image, name: `Walk in ${i + 1}.png` })) : [];
+    const exitImages = walks.exit ? splitGeneratedAtlas(walks.exit, character.width, character.height, true).map((image, i) => ({ ...image, name: `Walk out ${i + 1}.png` })) : [];
+    const images = [...enterImages, ...exitImages];
+    if (images.length) sprites = await store.importImageBuffers(character.id, images);
+    controller.signal.throwIfAborted();
+    progress('Preparing the new animations for review');
+    const next = addMotionChoices(character, generatedMotionChoices(animations, {
+      enter: sprites.slice(0, enterImages.length), exit: sprites.slice(enterImages.length)
+    }, request.character.motions?.enter?.side ?? 'right', request.character.motions?.exit?.side ?? request.character.motions?.enter?.side ?? 'right'));
+    validateCharacter(next);
+    const pending = generatedMotionAssets.get(character.id) ?? new Set<string>();
+    for (const sprite of sprites) pending.add(sprite.file);
+    if (pending.size) generatedMotionAssets.set(character.id, pending);
+    return next;
+  } catch (error) {
+    await store.discardUnreferencedImages(character.id, sprites.map(sprite => sprite.file)).catch(() => undefined);
+    if (controller.signal.aborted) throw new Error('Animation generation cancelled. Requests already sent to OpenAI may still be billed.');
     throw error;
   } finally { if (generationController === controller) generationController = undefined; }
 }
@@ -278,13 +345,30 @@ function createAssistant(): WebContentsView {
 }
 
 function handlers(): void {
+  ipcMain.handle('control:info', e => { assertTrusted(e); return controls!.info(); });
+  ipcMain.handle('control:settings', async (e, value) => {
+    assertTrusted(e); const paused = globalShortcut.isSuspended(); globalShortcut.setSuspended(false);
+    try { return await controls!.save(value); } finally { globalShortcut.setSuspended(paused); }
+  });
+  ipcMain.handle('control:execute', (e, value) => { assertTrusted(e); return controls!.execute(value); });
+  ipcMain.on('control:runtime', (e, value: ControlRuntime) => { if (trusted(e)) controls?.update(value); });
+  ipcMain.handle('control:pause-hotkeys', (e, paused) => { assertTrusted(e); globalShortcut.setSuspended(paused === true); });
+  ipcMain.handle('control:install-plugin', async e => {
+    assertTrusted(e);
+    const filename = path.join(app.getAppPath(), 'build', 'streamdeck', 'com.voxincarnate.streamdeck.streamDeckPlugin');
+    // shell.openPath requires an unpacked file when this app is inside an asar archive.
+    const target = app.isPackaged ? path.join(process.resourcesPath, 'streamdeck', 'com.voxincarnate.streamdeck.streamDeckPlugin') : filename;
+    const error = await shell.openPath(target); if (error) throw new Error(`Could not open the Stream Deck plugin installer: ${error}`);
+  });
   ipcMain.handle('app:bootstrap', e => { assertTrusted(e); return bootstrap(); });
   ipcMain.handle('app:copy', (e, text) => {
     assertTrusted(e); if (typeof text !== 'string' || text.length > 8192) throw new Error('Invalid text.');
     clipboard.writeText(text);
   });
   ipcMain.handle('character:save', async (e, character: Character) => {
-    assertTrusted(e); await store.saveCharacter(character); generatedDrafts.delete(character.id); overlay.refresh(); return bootstrap();
+    assertTrusted(e); await store.saveCharacter(character); generatedDrafts.delete(character.id);
+    await discardMotionAssets(character.id).catch(() => console.warn('Saved character retained; unused generated images could not be removed.'));
+    overlay.refresh(); return bootstrap();
   });
   ipcMain.handle('character:rename', async (e, id: string, name: string) => {
     assertTrusted(e); await store.renameCharacter(id, name); overlay.refresh(); return bootstrap();
@@ -319,6 +403,12 @@ function handlers(): void {
     const task = generateCharacter(request); generationTask = task;
     try { return await task; } finally { if (generationTask === task) generationTask = undefined; }
   });
+  ipcMain.handle('generation:motions', async (e, request: CharacterMotionGenerationRequest) => {
+    assertTrusted(e);
+    if (generationTask) throw new Error('Wait for the current generation step to finish.');
+    const task = generateCharacterMotions(request); generationTask = task;
+    try { return await task; } finally { if (generationTask === task) generationTask = undefined; }
+  });
   ipcMain.handle('generation:detect-face', async (e, sourceId: string) => {
     assertTrusted(e);
     if (generationController || generationTask) throw new Error('Wait for the current generation step to finish.');
@@ -341,9 +431,12 @@ function handlers(): void {
   });
   ipcMain.handle('generation:cancel', e => { assertTrusted(e); generationController?.abort(); });
   ipcMain.handle('generation:discard', async (e, id: string) => {
-    assertTrusted(e); await store.discardCharacterDraft(id); generatedDrafts.delete(id);
+    assertTrusted(e);
+    await discardMotionAssets(id);
+    if (!store.snapshot().characters.some(character => character.id === id)) await store.discardCharacterDraft(id);
+    generatedDrafts.delete(id);
   });
-  ipcMain.handle('character:presence', (e, id: string, visible: boolean) => { assertTrusted(e); return overlay.setPresence(id, visible); });
+  ipcMain.handle('character:presence', (e, id: string, visible: boolean, effect?: MotionEffect) => { assertTrusted(e); const next = overlay.setPresence(id, visible, effect); controls?.refresh(); return next; });
   ipcMain.handle('character:demo', async e => {
     assertTrusted(e);
     await store.createVisemeDemo(path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'artwork', 'viseme-demo'));
@@ -377,6 +470,25 @@ function handlers(): void {
       images.push({ name: path.basename(file), png: image.toPNG() });
     }
     return store.importImageBuffers(characterId, images);
+  });
+  ipcMain.handle('character:import-sound', async (e, characterId: string, preset?: string) => {
+    assertTrusted(e);
+    const soundsDir = path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(), 'sounds');
+    let filename: string;
+    let name: string;
+    if (preset !== undefined) {
+      const choice = SOUND_PRESETS.find(item => item.id === preset);
+      if (!choice) throw new Error('Choose a supported sound preset.');
+      filename = path.join(soundsDir, choice.file); name = `${choice.name}.wav`;
+    } else {
+      const result = await dialog.showOpenDialog(window, { title: 'Choose an animation sound', defaultPath: soundsDir,
+        properties: ['openFile'], filters: [{ name: 'WAV sound effects', extensions: ['wav'] }] });
+      if (result.canceled || !result.filePaths[0]) return;
+      filename = result.filePaths[0]; name = path.basename(filename);
+    }
+    const info = await fs.stat(filename);
+    if (!info.isFile() || info.size > MAX_SOUND_BYTES) throw new Error('Choose a WAV sound effect up to 16 MB.');
+    return store.importSoundBuffer(characterId, name, await fs.readFile(filename));
   });
   ipcMain.on('audio:state', (e, input: Omit<AvatarState, 'sequence' | 'timestamp'>) => {
     if (trusted(e)) overlay.publish(input);
@@ -437,12 +549,40 @@ async function main(): Promise<void> {
   await app.whenReady();
   store = new LibraryStore(app.getPath('userData'), app.isPackaged ? path.join(process.resourcesPath, 'legacy-artwork') : path.join(process.cwd(), 'overlays'));
   await store.load();
+  if (smoke && process.argv.includes('--controls-check')) await store.saveSettings({ ...store.snapshot().settings, mode: 'direct', inputId: '', browserInputId: '', assistantUrl: 'https://app.sesame.com' });
+  if (smoke && (process.argv.includes('--motion-sound-check') || process.argv.includes('--controls-check'))) {
+    const { createServer } = await import('node:net');
+    const reserve = createServer();
+    await new Promise<void>((resolve, reject) => { reserve.once('error', reject); reserve.listen(0, '127.0.0.1', resolve); });
+    const port = (reserve.address() as import('node:net').AddressInfo).port;
+    await new Promise<void>(resolve => reserve.close(() => resolve()));
+    await store.saveSettings({ ...store.snapshot().settings, overlayPort: port });
+  }
   overlay = new OverlayServer(store); overlayOrigin = await overlay.start();
+  const controlConfig = new ControlConfigStore(app.getPath('userData'));
+  if (smoke) {
+    const { createServer } = await import('node:net'); const reserve = createServer();
+    reserve.listen(0, '127.0.0.1'); await new Promise<void>(resolve => reserve.once('listening', resolve));
+    const port = (reserve.address() as { port: number }).port; await new Promise<void>(resolve => reserve.close(() => resolve()));
+    const config = await controlConfig.load(); await controlConfig.save({ ...config, enabled: true, port, hotkeys: config.hotkeys.map(binding => ({ ...binding, accelerator: '' })) });
+  }
+  controls = new Controls(controlConfig, globalShortcut,
+    () => store.snapshot().characters.map(character => ({ id: character.id, name: character.name, visible: overlay.getPresence(character.id).visible,
+      motions: { enter: MOTION_EFFECTS.filter(effect => hasMotion(character, 'enter', effect)), exit: MOTION_EFFECTS.filter(effect => hasMotion(character, 'exit', effect)) } })),
+    async (command: ControlCommand): Promise<ControlResult> => {
+      if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return { ok: false, code: 'not_ready', message: 'Open the studio before sending a command.' };
+      // Fixed, validated command entry point in our trusted local renderer. The gesture
+      // flag lets an explicit hardware press start the embedded-tab capture API.
+      return window.webContents.executeJavaScript(`window.voxControl ? window.voxControl(${JSON.stringify(command)}) : ({ok:false,code:'not_ready',message:'The studio is opening.'})`, true);
+    });
+  await controls.start();
   window = new BrowserWindow({ title: 'Voxincarnate', width: 1440, height: 960, minWidth: 1120, minHeight: 740,
     show: !smoke, backgroundColor: '#11171b', autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true,
       nodeIntegration: false, backgroundThrottling: false, webSecurity: true, offscreen: smoke } });
   handlers();
+  controls.on('state', state => { if (!window.isDestroyed()) window.webContents.send('control:state', state); });
+  controls.on('result', result => { if (!window.isDestroyed()) window.webContents.send('control:result', result); });
   const localSession = window.webContents.session;
   localSession.setPermissionCheckHandler((wc, permission, origin, details) => {
     if (smoke) permissionTrace.push({ check: permission, origin, details });
@@ -466,9 +606,13 @@ async function main(): Promise<void> {
   const abandonGeneration = () => {
     generationController?.abort();
     for (const id of generatedDrafts) void store.discardCharacterDraft(id).then(() => generatedDrafts.delete(id)).catch(() => undefined);
+    for (const id of generatedMotionAssets.keys()) void discardMotionAssets(id).catch(() => undefined);
   };
   window.webContents.on('did-navigate', abandonGeneration);
   window.webContents.on('render-process-gone', abandonGeneration);
+  const controlsUnavailable = () => { controls?.unavailable(); globalShortcut.setSuspended(false); };
+  window.webContents.on('did-start-loading', controlsUnavailable);
+  window.webContents.on('render-process-gone', controlsUnavailable);
   window.webContents.on('destroyed', abandonGeneration);
   window.webContents.on('will-navigate', e => e.preventDefault());
   window.webContents.on('will-prevent-unload', event => {
@@ -484,6 +628,18 @@ async function main(): Promise<void> {
 
 async function smokeTest(): Promise<void> {
   const output = path.join(process.cwd(), '.qa'); await fs.mkdir(output, { recursive: true });
+  if (process.argv.includes('--controls-check')) {
+    const result = await runControlsSmoke(window, controls!, store, overlay, output);
+    const report = path.join(output, app.isPackaged ? 'controls-packaged.json' : 'controls.json');
+    await fs.writeFile(report, JSON.stringify(result, null, 2));
+    console.log(JSON.stringify({ ok: result.ok, report }));
+    app.exit(result.ok ? 0 : 1); return;
+  }
+  if (process.argv.includes('--motion-sound-check')) {
+    const result = await runMotionSoundSmoke(window, store, overlay, overlayOrigin, output);
+    const report = path.join(output, 'motion-sounds.json'); await fs.writeFile(report, JSON.stringify(result, null, 2));
+    console.log(JSON.stringify({ ok: result.ok, report })); app.exit(result.ok ? 0 : 1); return;
+  }
   if (process.argv.includes('--character-delete-check')) {
     const result = await runCharacterDeletionSmoke(window, output);
     const report = path.join(output, 'character-deletion.json');
@@ -569,8 +725,9 @@ app.on('before-quit', event => {
   if (shuttingDown || !overlay || smoke) return;
   event.preventDefault(); shuttingDown = true; stopBrowserMic();
   // Wait for an aborted import to finish its queued rollback before ending the process.
-  void Promise.allSettled([overlay.stop(), ...(generationTask ? [generationTask] : []),
-    ...[...generatedDrafts].map(id => store.discardCharacterDraft(id))]).finally(() => app.quit());
+  void Promise.allSettled([overlay.stop(), ...(controls ? [controls.stop()] : []), ...(generationTask ? [generationTask] : []),
+    ...[...generatedDrafts].map(id => store.discardCharacterDraft(id)),
+    ...[...generatedMotionAssets.keys()].map(id => discardMotionAssets(id))]).finally(() => app.quit());
 });
 void main().catch(error => {
   console.error(error);

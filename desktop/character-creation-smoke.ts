@@ -4,11 +4,14 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { VISEMES, characterSprites, type AppSettings, type Character } from './shared';
 import { regionToPixels } from './character-compositing';
+import { hasMotion } from './character-motions';
 
 const fixtureMouthRegion = { x: .4, y: .27, width: .2, height: .08 };
 const fixtureFaceRegion = { x: .33, y: .08, width: .34, height: .34 };
 const fixtureImages = new Map<string, string>();
 const fixtureRequests = { concepts: 0, mouthDetections: 0, sourceImages: 0, mouthAtlases: 0, mouthCropUploads: 0, walkAtlases: 0 };
+let failWalkingAfter: number | undefined;
+let holdNextWalking = false;
 function fixtureAtlas(grid: number, variant: number): string {
   const key = `${grid}:${variant}`;
   if (fixtureImages.has(key)) return fixtureImages.get(key)!;
@@ -91,7 +94,20 @@ export function createCharacterFixtureFetch(): typeof fetch {
         if (!editable) throw new Error('Speech edit mask had no editable pixels.');
         encoded = nativeImage.createFromBitmap(pixels, { width: 1024, height: 1024 }).toPNG().toString('base64');
         fixtureRequests.mouthCropUploads++; fixtureRequests.mouthAtlases++;
-      } else { fixtureRequests.walkAtlases++; encoded = fixtureAtlas(2, /walking-out/i.test(prompt) ? 3 : 1); }
+      } else {
+        fixtureRequests.walkAtlases++;
+        if (failWalkingAfter !== undefined) {
+          if (failWalkingAfter-- === 0) { failWalkingAfter = undefined; return new Response(null, { status: 503 }); }
+        }
+        if (holdNextWalking) {
+          holdNextWalking = false;
+          await new Promise<never>((_, reject) => {
+            if (init.signal?.aborted) reject(new DOMException('Fixture cancelled.', 'AbortError'));
+            else init.signal?.addEventListener('abort', () => reject(new DOMException('Fixture cancelled.', 'AbortError')), { once: true });
+          });
+        }
+        encoded = fixtureAtlas(2, /walking-out/i.test(prompt) ? 3 : 1);
+      }
     } else throw new Error('Unexpected character fixture endpoint.');
     return Response.json({ data: [{ b64_json: encoded }] });
   };
@@ -186,10 +202,11 @@ export async function runCharacterCreationSmoke(window: BrowserWindow, outputDir
     return { ok: true, poses: 9, outsideSelectedPixelsIdentical: true, restIsExactOriginal: true, originalWidth: size.width, originalHeight: size.height, selectedRegion };
   };
   const assertCreatorMotionDefaults = async () => {
-    const defaults = await evaluate<{ entrance: string; sameEdge: boolean; independentExit: boolean; entranceEffects: string[]; exitEffects: string[] }>(`({entrance:document.querySelector('#creator-entrance-side')?.value,sameEdge:!!document.querySelector('.same-edge input')?.checked,independentExit:!!document.querySelector('#creator-exit-side'),entranceEffects:[...document.querySelector('#creator-entrance-effect').options].map(option=>option.value),exitEffects:[...document.querySelector('#creator-exit-effect').options].map(option=>option.value)})`);
+    const defaults = await evaluate<{ entrance: string; sameEdge: boolean; independentExit: boolean; entranceEffects: string[]; exitEffects: string[]; selected: string[] }>(`({entrance:document.querySelector('#creator-entrance-side')?.value,sameEdge:!!document.querySelector('.same-edge input')?.checked,independentExit:!!document.querySelector('#creator-exit-side'),entranceEffects:[...document.querySelectorAll('input[id^="creator-motion-enter-"]')].map(input=>input.id.slice('creator-motion-enter-'.length)),exitEffects:[...document.querySelectorAll('input[id^="creator-motion-exit-"]')].map(input=>input.id.slice('creator-motion-exit-'.length)),selected:[...document.querySelectorAll('.motion-selection input:checked')].map(input=>input.id)})`);
     if (defaults.entrance !== 'right' || !defaults.sameEdge || defaults.independentExit || !['walk', 'smoke', 'fall-jump'].every(effect => defaults.entranceEffects.includes(effect) && defaults.exitEffects.includes(effect))) {
       throw new Error('Creator did not default to the same right edge or expose all entrance and exit effects.');
     }
+    if (defaults.selected.join(',') !== 'creator-motion-enter-walk,creator-motion-exit-walk') throw new Error('Creator did not default to one walk in each direction.');
     await click('.same-edge input');
     await waitFor(`document.querySelector('#creator-exit-side')`, 'Independent exit direction did not become selectable.');
     await setValue('#creator-exit-side', 'left', true);
@@ -223,11 +240,18 @@ export async function runCharacterCreationSmoke(window: BrowserWindow, outputDir
     await setValue('#creator-name', 'Fixture idea suite');
     await setValue('#creator-description', 'A friendly green robot with an expressive face and walking legs.');
     await setValue('#creator-style', 'Keep transparent padding and consistent proportions.');
+    await click('#creator-motion-enter-walk');
+    if (!await evaluate<boolean>(`document.querySelector('#generate-character').disabled`)) throw new Error('Creation allowed no entrance animation.');
+    await click('#creator-motion-enter-walk');
+    for (const kind of ['enter', 'exit']) for (const effect of ['fall-jump', 'smoke']) await click(`#creator-motion-${kind}-${effect}`);
     await waitFor(`!document.querySelector('#generate-character')?.disabled`, 'Optional character generation was unavailable.');
     window.setSize(1440, 960); await evaluate('window.scrollTo(0,0)');
     result.creatorDesktop = await screenshot('character-creator-desktop.png');
     window.setSize(1120, 740);
     result.creatorMinimum = await screenshot('character-creator-minimum.png');
+    await evaluate(`document.querySelector('.creator-motion').scrollIntoView({block:'start'});window.scrollBy(0,-88)`);
+    result.creatorMotionMinimum = await screenshot('character-creator-animations-minimum.png');
+    await evaluate('window.scrollTo(0,0)');
     result.creatorLayout = await evaluate(`({width:innerWidth,height:innerHeight,overflow:document.documentElement.scrollWidth>innerWidth,nameLabeled:!!document.querySelector('label[for="creator-name"]'),descriptionLabeled:!!document.querySelector('label[for="creator-description"]'),generateAvailable:!document.querySelector('#generate-character').disabled})`);
     if ((result.creatorLayout as { overflow: boolean }).overflow) throw new Error('Character creator overflowed the minimum window width.');
     await click('#generate-character');
@@ -268,6 +292,10 @@ export async function runCharacterCreationSmoke(window: BrowserWindow, outputDir
     const restored = await active(); assertSuite(restored);
     if (JSON.stringify(restored) !== JSON.stringify(generated)) throw new Error('Generated character changed during saved reload.');
     result.persistence = { ok: true, images: 19, visemes: 9, walkingClips: 2, framesPerWalkingClip: 4 };
+    for (const kind of ['enter', 'exit'] as const) for (const effect of ['walk', 'fall-jump', 'smoke'] as const) {
+      if (!hasMotion(restored, kind, effect)) throw new Error('Multi-selection creation lost a selected animation.');
+    }
+    result.multipleAnimationCreation = { ok: true, entranceTypes: 3, exitTypes: 3, savedAndRestored: true };
     const exited = await evaluate<{ visible: boolean; sequence: number }>(`window.vox.setCharacterPresence(${JSON.stringify(generated.id)},false)`);
     const entered = await evaluate<{ visible: boolean; sequence: number }>(`window.vox.setCharacterPresence(${JSON.stringify(generated.id)},true)`);
     if (exited.visible || !entered.visible || entered.sequence <= exited.sequence) throw new Error('Real OBS presence IPC did not acknowledge ordered exit and entrance commands.');
@@ -305,6 +333,11 @@ export async function runCharacterCreationSmoke(window: BrowserWindow, outputDir
     if (fixtureRequests.mouthDetections !== mouthDetectionsBeforeManual) throw new Error('Manual mouth selection still sent automatic mouth detection.');
     result.sourceImageMouthPreservation = await proveMouthPreservation(sourceCharacter);
     result.sourceImageRoute = { ok: true, nativeChooserFixture: true, manualMouthSelection: true, manualSelectionSkipsDetection: true, completeSuiteSavedAndRestored: true };
+    const requestsBeforeLocalAddition = fixtureRequests.walkAtlases + fixtureRequests.mouthAtlases;
+    const localAddition = await evaluate<Character>(`window.vox.generateCharacterMotions({character:${JSON.stringify(sourceCharacter)},animations:{enter:['smoke'],exit:['fall-jump']}})`);
+    if (!hasMotion(localAddition, 'enter', 'smoke') || !hasMotion(localAddition, 'exit', 'fall-jump') ||
+      requestsBeforeLocalAddition !== fixtureRequests.walkAtlases + fixtureRequests.mouthAtlases || JSON.stringify(await active()) !== JSON.stringify(sourceCharacter)) throw new Error('Adding only local effects requested images or changed the saved character.');
+    result.localOnlyAddition = { ok: true, imageApiRequests: 0, activeWalkingClipsRetained: true, savedCharacterUnchanged: true };
     const localEffects: Record<string, unknown> = {};
     for (const effect of ['smoke', 'fall-jump'] as const) {
       const character: Character = { ...sourceCharacter, motions: {
@@ -339,8 +372,8 @@ export async function runCharacterCreationSmoke(window: BrowserWindow, outputDir
     await setValue('#creator-speech-mode', 'face', true);
     await evaluate(`document.querySelector('.creator-speech').scrollIntoView({block:'start'});window.scrollBy(0,-88)`);
     result.faceExpressionsCreator = await screenshot('character-face-expressions-creator.png');
-    await setValue('#creator-entrance-effect', 'smoke', true);
-    await setValue('#creator-exit-effect', 'fall-jump', true);
+    await click('#creator-motion-enter-walk'); await click('#creator-motion-exit-walk');
+    await click('#creator-motion-enter-smoke'); await click('#creator-motion-exit-fall-jump');
     await waitFor(`!document.querySelector('#generate-character')?.disabled`, 'Local-effect character generation was unavailable.');
     const walkingRequestsBeforeLocalGeneration = fixtureRequests.walkAtlases;
     await click('#generate-character');
@@ -358,6 +391,57 @@ export async function runCharacterCreationSmoke(window: BrowserWindow, outputDir
     if (fixtureRequests.walkAtlases !== walkingRequestsBeforeLocalGeneration) throw new Error('Selecting only local effects still requested paid walking artwork.');
     result.localEffectCreation = { ok: true, entrance: 'smoke', exit: 'fall-jump', mouthImages: 11, motionFrames: 0, durationMs: 1000, savedAndRestored: true, walkingApiRequests: 0,
       naturalFaceExpressions: true, facePreservation: await proveMouthPreservation(localRestored, fixtureFaceRegion) };
+    const assetsDir = path.join(app.getPath('userData'), 'characters', localRestored.id, 'assets');
+    const originalFiles = (await fs.readdir(assetsDir)).sort().join(',');
+    const mouthRequestsBeforeAdditions = fixtureRequests.mouthAtlases;
+    const detectionRequestsBeforeAdditions = fixtureRequests.mouthDetections;
+    const walkingRequestsBeforeStage = fixtureRequests.walkAtlases;
+    const staged = await evaluate<Character>(`window.vox.generateCharacterMotions({character:${JSON.stringify(localRestored)},animations:{enter:['walk'],exit:[]}})`);
+    if (!hasMotion(staged, 'enter', 'walk') || staged.motions?.enter?.effect !== 'smoke') throw new Error('Staged generation replaced the active entrance.');
+    if (fixtureRequests.walkAtlases - walkingRequestsBeforeStage !== 1 || hasMotion(staged, 'exit', 'walk')) throw new Error('Generating one missing walk also generated the unselected direction.');
+    if (JSON.stringify(await active()) !== JSON.stringify(localRestored)) throw new Error('Animation generation saved without review.');
+    await evaluate(`window.vox.discardCharacterDraft(${JSON.stringify(localRestored.id)})`);
+    if ((await fs.readdir(assetsDir)).sort().join(',') !== originalFiles) throw new Error('Discard left staged motion images or removed saved speech images.');
+    result.discardedAddition = { ok: true, stagedWalkingFrames: 4, savedArtworkRetained: true, stagedImagesRemoved: true };
+    const duplicate = await evaluate<string>(`window.vox.generateCharacterMotions({character:${JSON.stringify(localRestored)},animations:{enter:['smoke'],exit:[]}}).then(()=>'',error=>error.message)`);
+    if (!duplicate.includes('already has')) throw new Error('Existing animation generation was not rejected before API work.');
+    await click('.character-heading button');
+    await waitFor(`document.querySelector('.add-animations')`, 'Saved character did not expose missing animation generation.');
+    if (await evaluate<number>(`document.querySelectorAll('.add-animations .motion-choice.available').length`) !== 2) throw new Error('Existing local animations were not marked already available.');
+    for (const [kind, effect] of [['enter', 'walk'], ['exit', 'walk'], ['enter', 'fall-jump'], ['exit', 'smoke']]) await click(`#add-motion-${kind}-${effect}`);
+    window.setSize(1440, 960); await evaluate(`document.querySelector('.add-animations').scrollIntoView({block:'start'});window.scrollBy(0,-88)`);
+    result.missingAnimationsDesktop = await screenshot('character-missing-animations-desktop.png');
+    window.setSize(1120, 740); await waitFor('innerWidth<1140', 'Missing-animation minimum resize did not settle.');
+    await evaluate(`document.querySelector('.add-animations').scrollIntoView({block:'start'});window.scrollBy(0,-88)`);
+    result.missingAnimationsMinimum = await screenshot('character-missing-animations-minimum.png');
+    if (await evaluate<boolean>('document.documentElement.scrollWidth>innerWidth')) throw new Error('Missing-animation controls overflowed the minimum window width.');
+    failWalkingAfter = 1;
+    await click('#generate-character-motions');
+    await waitFor(`document.querySelector('.add-animations .inline-error[role="alert"]') && !document.querySelector('#generate-character-motions').disabled`, 'Failed additions did not restore retry controls.');
+    if (JSON.stringify(await active()) !== JSON.stringify(localRestored) || (await fs.readdir(assetsDir)).sort().join(',') !== originalFiles) throw new Error('Failed additions changed saved artwork.');
+    result.failedAddition = { ok: true, secondWalkingRequestFailed: true, savedArtworkRetained: true, noPartialImages: true };
+    holdNextWalking = true;
+    await click('#generate-character-motions');
+    await waitFor(`document.querySelector('.add-animations')?.getAttribute('aria-busy')==='true' && document.querySelector('.add-animations .generation-progress strong')?.textContent==='Creating the walk-on animation'`, 'Cancellable animation generation did not begin.');
+    await click('.add-animations .creator-actions .secondary');
+    await waitFor(`document.querySelector('.add-animations .inline-error')?.textContent.includes('cancelled') && !document.querySelector('#generate-character-motions').disabled`, 'Animation cancellation did not restore generation controls.');
+    if (JSON.stringify(await active()) !== JSON.stringify(localRestored) || (await fs.readdir(assetsDir)).sort().join(',') !== originalFiles) throw new Error('Cancelled additions changed saved artwork.');
+    result.cancelledAddition = { ok: true, currentRequestAborted: true, savedArtworkRetained: true, noPartialImages: true };
+    const walkingRequestsBeforeRetry = fixtureRequests.walkAtlases;
+    await click('#generate-character-motions');
+    await waitFor(`document.querySelectorAll('.add-animations .motion-choice.available').length===6`, 'New choices were not added to the saved character draft.');
+    if (fixtureRequests.walkAtlases - walkingRequestsBeforeRetry !== 2 || fixtureRequests.mouthAtlases !== mouthRequestsBeforeAdditions || fixtureRequests.mouthDetections !== detectionRequestsBeforeAdditions) throw new Error('Missing-motion generation repeated speech or unselected walking requests.');
+    if (JSON.stringify(await active()) !== JSON.stringify(localRestored)) throw new Error('New animation choices saved before review.');
+    await save(); await reload(); const completedCharacter = await active();
+    if (JSON.stringify(completedCharacter.closed) !== JSON.stringify(localRestored.closed) || JSON.stringify(completedCharacter.open) !== JSON.stringify(localRestored.open) ||
+      JSON.stringify(completedCharacter.visemes) !== JSON.stringify(localRestored.visemes) || JSON.stringify(completedCharacter.motions) !== JSON.stringify(localRestored.motions)) throw new Error('Adding animations changed existing speech or active clips.');
+    for (const kind of ['enter', 'exit'] as const) for (const effect of ['walk', 'fall-jump', 'smoke'] as const) if (!hasMotion(completedCharacter, kind, effect)) throw new Error('An added animation was lost after restart.');
+    await click('.character-heading button');
+    await waitFor(`document.querySelector('#motion-effect-enter')`, 'Active animation chooser did not open.');
+    await setValue('#motion-effect-enter', 'walk', true); await setValue('#motion-effect-exit', 'walk', true);
+    await save(); await reload(); const walkingCharacter = await active();
+    if (walkingCharacter.motions?.enter?.frames.length !== 4 || walkingCharacter.motions?.exit?.frames.length !== 4 || !hasMotion(walkingCharacter, 'enter', 'smoke') || !hasMotion(walkingCharacter, 'exit', 'fall-jump')) throw new Error('Switching active animations lost stored artwork or local choices.');
+    result.existingCharacterAdditions = { ok: true, missingChoicesAdded: 4, walkingRequests: 2, speechRequests: 0, onlyMissingChoicesSelectable: true, activeClipsRetainedUntilChanged: true, reviewBeforeSave: true, switchedAndRestored: true };
     result.fixtureRequests = { ...fixtureRequests };
   } catch (error) {
     result.ok = false; result.error = error instanceof Error ? error.stack : String(error);

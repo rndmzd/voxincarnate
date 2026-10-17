@@ -1,7 +1,7 @@
 {
   "name": "voxincarnate",
   "productName": "Voxincarnate",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "A Windows talking-avatar studio with isolated assistant browser audio and transparent OBS output.",
   "author": "Voxincarnate contributors",
   "license": "MIT",
@@ -10,6 +10,8 @@
   "main": "build/main.cjs",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "streamdeck:build": "node scripts/build-streamdeck.mjs",
+    "smoke:streamdeck": "npm run streamdeck:build && tsx desktop/streamdeck-smoke.ts",
     "setup": "node scripts/setup.mjs",
     "start": "npm run setup && npm run build && electron .",
     "preview": "vite --host 127.0.0.1 --config vite.config.ts",
@@ -18,7 +20,9 @@
     "check": "npm run typecheck && npm test && npm run build",
     "dist": "npm run setup && npm run check && node scripts/package.mjs --win nsis zip --x64 --publish never",
     "pack": "npm run setup && npm run build && node scripts/package.mjs --win --dir --x64 --publish never",
-    "smoke": "npm run setup && npm run build && electron . --smoke-test"
+    "smoke": "npm run setup && npm run build && electron . --smoke-test",
+    "smoke:controls": "npm run setup && npm run build && electron . --smoke-test --controls-check",
+    "smoke:sounds": "npm run setup && npm run build && electron . --smoke-test --motion-sound-check"
   },
   "dependencies": {
     "react": "19.3.1",
@@ -26,6 +30,8 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@elgato/cli": "1.10.2",
+    "@elgato/streamdeck": "3.0.2",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
@@ -46,11 +52,24 @@
     },
     "files": [
       "build/**/*",
+      "!build/streamdeck/**/logs/**/*",
       "package.json",
       "LICENSE",
       "README.md"
     ],
     "extraResources": [
+      {
+        "from": "build/streamdeck/com.voxincarnate.streamdeck.streamDeckPlugin",
+        "to": "streamdeck/com.voxincarnate.streamdeck.streamDeckPlugin"
+      },
+      {
+        "from": "sounds",
+        "to": "sounds",
+        "filter": [
+          "puff_of_smoke.wav",
+          "footsteps.wav"
+        ]
+      },
       {
         "from": "artwork/viseme-demo",
         "to": "artwork/viseme-demo",

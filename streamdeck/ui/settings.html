@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Voxincarnate settings</title><link rel="stylesheet" href="settings.css"></head>
+<body><main>
+  <p id="status" role="status">Connecting to Stream Deck…</p>
+  <form id="pair-form"><label for="connection">Connection code</label><input id="connection" type="password" autocomplete="off" spellcheck="false" placeholder="Paste from Voxincarnate"><button type="submit">Connect</button></form>
+  <p class="hint">In Voxincarnate, open <strong>Stream Deck &amp; hotkeys</strong> and choose <strong>Copy connection code</strong>. Connect once for all your keys.</p>
+  <section id="motion" hidden><label for="character">Character</label><select id="character"><option value="">Currently selected</option></select><label for="effect">Animation</label><select id="effect"><option value="">Saved default</option><option value="walk">Walking</option><option value="fall-jump">Jump</option><option value="smoke">Puff of smoke</option></select><p class="hint" id="availability">Save character changes in the studio before playing on-air animations.</p></section>
+  <p class="hint">Keep Voxincarnate open. Start capture uses the studio’s selected audio mode and microphone. Refresh requires audio to be stopped.</p>
+</main><script src="settings.js"></script></body></html>

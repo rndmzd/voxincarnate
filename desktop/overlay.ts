@@ -1,11 +1,14 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
 import { createAvatarAnimator, createMotionAnimator, drawSmokePuff } from './animation.js';
+import { createMotionSoundPlayer } from './motion-sound.js';
+import { hasMotion } from './character-motions.js';
+import { MOTION_EFFECTS } from './shared.js';
 import type { LibraryStore } from './library.js';
-import type { Articulation, AvatarState, Character, CharacterPresence } from './shared.js';
+import type { Articulation, AvatarState, Character, CharacterPresence, MotionEffect } from './shared.js';
 
 type Subscriber = { socket: WebSocket; characterId: string };
 const safeJson = (value: unknown): string => JSON.stringify(value).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
@@ -74,9 +77,14 @@ export class OverlayServer {
     this.current = { characterId: input.characterId, level: Math.max(0, Math.min(1, input.level)), db: Math.max(-100, Math.min(0, input.db)), speaking: input.running && input.speaking, running: input.running, timestamp: this.lastPublished, sequence: ++this.sequence, ...(input.running && articulation ? { articulation } : {}) };
     this.broadcast();
   }
-  setPresence(characterId: string, visible: boolean): CharacterPresence {
-    if (typeof visible !== 'boolean' || !this.store.snapshot().characters.some(character => character.id === characterId)) throw new Error('Choose a valid character and visibility.');
-    const presence = { visible, sequence: (this.presence.get(characterId)?.sequence ?? 0) + 1 };
+  getPresence(characterId: string): CharacterPresence { return { ...(this.presence.get(characterId) ?? { visible: true, sequence: 0 }) }; }
+  setPresence(characterId: string, visible: boolean, effect?: MotionEffect): CharacterPresence {
+    const character = this.store.snapshot().characters.find(character => character.id === characterId);
+    if (typeof visible !== 'boolean' || !character) throw new Error('Choose a valid character and visibility.');
+    if (effect !== undefined && (!MOTION_EFFECTS.includes(effect) || !hasMotion(character, visible ? 'enter' : 'exit', effect))) {
+      throw new Error('This character does not have that entrance or exit animation. Add it in Edit character first.');
+    }
+    const presence: CharacterPresence = { visible, sequence: (this.presence.get(characterId)?.sequence ?? 0) + 1, ...(effect === undefined ? {} : { effect }) };
     this.presence.set(characterId, presence);
     this.broadcast();
     return { ...presence };
@@ -120,7 +128,7 @@ export class OverlayServer {
     const candidate = Buffer.from(url.searchParams.get('token') ?? ''); const expected = Buffer.from(this.store.snapshot().token);
     if (candidate.length !== expected.length || !timingSafeEqual(candidate, expected)) return;
     // The local file:// studio measures decoded alpha pixels. Its anonymous image
-    // requests have Origin:null or Electron's file://; permit only token-authenticated image reads.
+    // requests have Origin:null or Electron's file://; permit only authenticated asset reads.
     const studioAsset = (request.headers.origin === 'null' || request.headers.origin === 'file://') && (request.method === 'GET' || request.method === 'HEAD') && /^\/assets\/[^/]+\/[^/]+$/.test(url.pathname);
     if (request.headers.origin && request.headers.origin !== this.origin && !studioAsset) return;
     return url;
@@ -133,15 +141,31 @@ export class OverlayServer {
     if (parts[0] === 'overlay' && parts.length === 2) {
       const character = this.store.snapshot().characters.find(item => item.id === parts[1]); if (!character) { response.writeHead(404).end(); return; }
       const nonce = randomBytes(18).toString('base64');
-      response.setHeader('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self' ${this.origin.replace('http:', 'ws:')}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
+      response.setHeader('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src 'self'; media-src 'self'; connect-src 'self' ${this.origin.replace('http:', 'ws:')}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`);
       response.setHeader('Content-Type', 'text/html; charset=utf-8'); response.end(request.method === 'HEAD' ? undefined : overlayHtml(character, this.stateFor(character.id), this.store.snapshot().token, nonce)); return;
     }
     if (parts[0] === 'assets' && parts.length === 3) {
       const filename = this.store.assetPath(parts[1], parts[2]); if (!filename) { response.writeHead(404).end(); return; }
       if (request.headers.origin === 'null' || request.headers.origin === 'file://') { response.setHeader('Access-Control-Allow-Origin', request.headers.origin); response.setHeader('Vary', 'Origin'); }
-      response.setHeader('Content-Type', 'image/png'); response.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+      const sound = /\.wav$/i.test(parts[2]);
+      response.setHeader('Content-Type', sound ? 'audio/wav' : 'image/png'); response.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+      let range: { start: number; end: number } | undefined;
+      if (sound) {
+        let size: number; try { size = statSync(filename).size; } catch { response.writeHead(404).end(); return; }
+        response.setHeader('Accept-Ranges', 'bytes'); response.setHeader('Content-Length', size);
+        if (request.headers.range) {
+          const match = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range);
+          const start = match?.[1] ? Number(match[1]) : match?.[2] ? Math.max(0, size - Number(match[2])) : NaN;
+          const end = match?.[1] && match[2] ? Math.min(size - 1, Number(match[2])) : size - 1;
+          if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start >= size || end < start) {
+            response.removeHeader('Content-Length'); response.writeHead(416, { 'Content-Range': `bytes */${size}` }).end(); return;
+          }
+          range = { start, end }; response.statusCode = 206;
+          response.setHeader('Content-Range', `bytes ${start}-${end}/${size}`); response.setHeader('Content-Length', end - start + 1);
+        }
+      }
       if (request.method === 'HEAD') { response.end(); return; }
-      const stream = createReadStream(filename); stream.on('error', () => { if (!response.headersSent) response.writeHead(404); response.end(); }); stream.pipe(response); return;
+      const stream = createReadStream(filename, range); stream.on('error', () => { if (!response.headersSent) response.writeHead(404); response.end(); }); stream.pipe(response); return;
     }
     response.writeHead(404).end();
   }
@@ -149,16 +173,17 @@ export class OverlayServer {
 
 function overlayHtml(character: Character, state: AvatarState, token: string, nonce: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Voxincarnate avatar</title><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent}#stage,#smoke{position:absolute;left:50%;top:50%;transform-origin:center}#smoke{pointer-events:none}img{position:absolute;left:50%;top:50%;display:none;max-width:none;pointer-events:none}</style></head><body><div id="stage"></div><canvas id="smoke"></canvas><script nonce="${nonce}">
-const initial=${safeJson({ character, state })};const token=${safeJson(token)};const animator=(${createAvatarAnimator.toString()})();const motion=(${createMotionAnimator.toString()})();const drawSmoke=(${drawSmokePuff.toString()});let character=initial.character;let state=initial.state;let images=new Map();let bounds;let spriteBounds={};let generation=0;let deleted=false;let connected=false;let lastMessage=performance.now();let retry=250;let socket;let retryTimer;const stage=document.getElementById('stage');const smokeCanvas=document.getElementById('smoke');const smokeContext=smokeCanvas?.getContext?.('2d');
+const initial=${safeJson({ character, state })};const token=${safeJson(token)};const animator=(${createAvatarAnimator.toString()})();const motion=(${createMotionAnimator.toString()})();const sounds=(${createMotionSoundPlayer.toString()})((id,sound)=>'/assets/'+encodeURIComponent(id)+'/'+encodeURIComponent(sound.file)+'?token='+encodeURIComponent(token),undefined,message=>console.warn(message));sounds.baseline(initial.character.id,initial.state.presence?.sequence||0);const drawSmoke=(${drawSmokePuff.toString()});let character=initial.character;let state=initial.state;let images=new Map();let bounds;let spriteBounds={};let generation=0;let deleted=false;let connected=false;let lastMessage=performance.now();let retry=250;let socket;let retryTimer;const stage=document.getElementById('stage');const smokeCanvas=document.getElementById('smoke');const smokeContext=smokeCanvas?.getContext?.('2d');
 function geometry(){const scale=Math.min(innerWidth/character.width,innerHeight/character.height);return{width:innerWidth/scale,height:innerHeight/scale,bounds,spriteBounds}}
+function updateMotion(now){const start=motion.update(character,state.presence,now,geometry());sounds.play(character,start);if(!motion.frame(now).active)sounds.stop()}
 function size(){const scale=Math.min(innerWidth/character.width,innerHeight/character.height);stage.style.width=character.width+'px';stage.style.height=character.height+'px';stage.style.transform='translate(-50%,-50%) scale('+scale+')';if(smokeCanvas){smokeCanvas.width=character.width;smokeCanvas.height=character.height;smokeCanvas.style.transform=stage.style.transform}}addEventListener('resize',size);motion.update(character,state.presence,performance.now(),geometry());
 function visibleBounds(img,sprite,next){const width=img.naturalWidth||img.width||next.width;const height=img.naturalHeight||img.height||next.height;let left=0,right=width,top=0,bottom=height;try{const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;const context=canvas.getContext('2d',{willReadFrequently:true});context.drawImage(img,0,0);const pixels=context.getImageData(0,0,width,height).data;left=width;right=0;top=height;bottom=0;for(let y=0;y<height;y++)for(let x=0;x<width;x++)if(pixels[(y*width+x)*4+3]>0){left=Math.min(left,x);right=Math.max(right,x+1);top=Math.min(top,y);bottom=Math.max(bottom,y+1)}if(right<=left||bottom<=top)return}catch{}return{left:sprite.x+(left-width/2)*sprite.scale,right:sprite.x+(right-width/2)*sprite.scale,top:sprite.y+(top-height/2)*sprite.scale,bottom:sprite.y+(bottom-height/2)*sprite.scale}}
-async function artwork(next){if(deleted)return;const currentGeneration=++generation;const prepared=new Map();const measured=[];const perSprite={};await Promise.all([...next.closed,...next.open,...Object.values(next.visemes||{}).flat(),...Object.values(next.motions||{}).flatMap(clip=>clip.frames)].map(async sprite=>{const img=new Image();img.alt='';img.src='/assets/'+encodeURIComponent(next.id)+'/'+encodeURIComponent(sprite.file)+'?token='+encodeURIComponent(token);try{await img.decode();prepared.set(sprite.id,img);const box=visibleBounds(img,sprite,next);if(box){measured.push(box);perSprite[sprite.id]=box}}catch{}}));if(currentGeneration!==generation||deleted)return;character=next;images=prepared;spriteBounds=perSprite;bounds=measured.length?{left:Math.min(...measured.map(box=>box.left)),right:Math.max(...measured.map(box=>box.right)),top:Math.min(...measured.map(box=>box.top)),bottom:Math.max(...measured.map(box=>box.bottom))}:undefined;stage.replaceChildren(...images.values());size();motion.update(character,state.presence,performance.now(),geometry())}
-function apply(next){if(!deleted&&next&&next.characterId===character.id&&typeof next.speaking==='boolean'){state={...next,presence:next.presence||state.presence};lastMessage=performance.now();motion.update(character,state.presence,lastMessage,geometry())}}
+async function artwork(next){if(deleted)return;const currentGeneration=++generation;const prepared=new Map();const measured=[];const perSprite={};await Promise.all([...next.closed,...next.open,...Object.values(next.visemes||{}).flat(),...Object.values(next.motions||{}).flatMap(clip=>clip.frames),...Object.values(next.motionVariants||{}).flatMap(choices=>Object.values(choices).flatMap(clip=>clip.frames))].map(async sprite=>{const img=new Image();img.alt='';img.src='/assets/'+encodeURIComponent(next.id)+'/'+encodeURIComponent(sprite.file)+'?token='+encodeURIComponent(token);try{await img.decode();prepared.set(sprite.id,img);const box=visibleBounds(img,sprite,next);if(box){measured.push(box);perSprite[sprite.id]=box}}catch{}}));if(currentGeneration!==generation||deleted)return;character=next;images=prepared;spriteBounds=perSprite;bounds=measured.length?{left:Math.min(...measured.map(box=>box.left)),right:Math.max(...measured.map(box=>box.right)),top:Math.min(...measured.map(box=>box.top)),bottom:Math.max(...measured.map(box=>box.bottom))}:undefined;stage.replaceChildren(...images.values());size();updateMotion(performance.now())}
+function apply(next){if(!deleted&&next&&next.characterId===character.id&&typeof next.speaking==='boolean'){state={...next,presence:next.presence||state.presence};lastMessage=performance.now();updateMotion(lastMessage)}}
 function idle(){state={...state,speaking:false,running:false};lastMessage=0}
-function remove(){if(deleted)return;deleted=true;connected=false;generation++;clearTimeout(retryTimer);idle();animator.reset();motion.reset();images.clear();bounds=undefined;spriteBounds={};stage.replaceChildren();if(smokeContext)smokeContext.clearRect(0,0,character.width,character.height);socket?.close?.()}
-function connect(){if(deleted)return;clearTimeout(retryTimer);socket=new WebSocket(location.origin.replace('http:','ws:')+'/events?token='+encodeURIComponent(token)+'&characterId='+encodeURIComponent(character.id));socket.onopen=()=>{if(deleted){socket.close();return}connected=true;retry=250};socket.onmessage=event=>{if(deleted)return;try{const msg=JSON.parse(event.data);if(msg.type==='deleted'&&msg.characterId===character.id)remove();else if(msg.type==='snapshot'){if(msg.character){artwork(msg.character);apply(msg.state)}else remove()}else if(msg.type==='state')apply(msg.state)}catch{}};socket.onerror=()=>socket.close();socket.onclose=event=>{if(event?.code===4004)remove();connected=false;idle();if(!deleted){retryTimer=setTimeout(connect,retry+Math.random()*100);retry=Math.min(retry*2,5000)}}}
-function render(now){if(deleted)return;requestAnimationFrame(render);const live=connected&&state.running&&now-lastMessage<=650;animator.update(character,{...state,running:live,speaking:live&&state.speaking},now);motion.update(character,state.presence,now,geometry());const movement=motion.frame(now);let selected=movement.sprite||animator.frame(now);if(!selected||!images.has(selected.id)){const fallback=movement.active?[...character.closed,...character.open]:animator.isClosed()?[...character.closed,...character.open]:[...character.open,...character.closed];selected=fallback.find(sprite=>images.has(sprite.id))}for(const [id,img]of images){img.style.display=movement.visible&&selected&&id===selected.id?'block':'none';if(selected&&id===selected.id){img.style.opacity=String(movement.opacity);img.style.transform='translate(-50%,-50%) translate('+((movement.flipX?-selected.x:selected.x)*movement.scale+movement.offsetX)+'px,'+(selected.y*movement.scale+movement.offsetY)+'px) scale('+(selected.scale*movement.scale*(movement.flipX?-1:1))+','+(selected.scale*movement.scale)+')'}}if(smokeContext)drawSmoke(smokeContext,movement.smoke,character.width,character.height)}
-size();artwork(character);connect();requestAnimationFrame(render);addEventListener('beforeunload',()=>{clearTimeout(retryTimer);socket?.close()});
+function remove(){if(deleted)return;deleted=true;connected=false;generation++;clearTimeout(retryTimer);idle();animator.reset();motion.reset();sounds.stop();images.clear();bounds=undefined;spriteBounds={};stage.replaceChildren();if(smokeContext)smokeContext.clearRect(0,0,character.width,character.height);socket?.close?.()}
+function connect(){if(deleted)return;clearTimeout(retryTimer);let firstSnapshot=true;socket=new WebSocket(location.origin.replace('http:','ws:')+'/events?token='+encodeURIComponent(token)+'&characterId='+encodeURIComponent(character.id));socket.onopen=()=>{if(deleted){socket.close();return}connected=true;retry=250};socket.onmessage=event=>{if(deleted)return;try{const msg=JSON.parse(event.data);if(msg.type==='deleted'&&msg.characterId===character.id)remove();else if(msg.type==='snapshot'){if(msg.character){if(firstSnapshot){sounds.baseline(msg.character.id,msg.state?.presence?.sequence||0);firstSnapshot=false}artwork(msg.character);apply(msg.state)}else remove()}else if(msg.type==='state')apply(msg.state)}catch{}};socket.onerror=()=>socket.close();socket.onclose=event=>{if(event?.code===4004)remove();connected=false;idle();sounds.stop();if(!deleted){retryTimer=setTimeout(connect,retry+Math.random()*100);retry=Math.min(retry*2,5000)}}}
+function render(now){if(deleted)return;requestAnimationFrame(render);const live=connected&&state.running&&now-lastMessage<=650;animator.update(character,{...state,running:live,speaking:live&&state.speaking},now);updateMotion(now);const movement=motion.frame(now);let selected=movement.sprite||animator.frame(now);if(!selected||!images.has(selected.id)){const fallback=movement.active?[...character.closed,...character.open]:animator.isClosed()?[...character.closed,...character.open]:[...character.open,...character.closed];selected=fallback.find(sprite=>images.has(sprite.id))}for(const [id,img]of images){img.style.display=movement.visible&&selected&&id===selected.id?'block':'none';if(selected&&id===selected.id){img.style.opacity=String(movement.opacity);img.style.transform='translate(-50%,-50%) translate('+((movement.flipX?-selected.x:selected.x)*movement.scale+movement.offsetX)+'px,'+(selected.y*movement.scale+movement.offsetY)+'px) scale('+(selected.scale*movement.scale*(movement.flipX?-1:1))+','+(selected.scale*movement.scale)+')'}}if(smokeContext)drawSmoke(smokeContext,movement.smoke,character.width,character.height)}
+size();artwork(character);connect();requestAnimationFrame(render);addEventListener('beforeunload',()=>{clearTimeout(retryTimer);sounds.stop();socket?.close()});
 </script></body></html>`;
 }

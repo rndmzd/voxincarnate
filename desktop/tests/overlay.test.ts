@@ -11,7 +11,8 @@ import { WebSocket } from 'ws';
 import { LibraryStore } from '../library.js';
 import { OverlayServer } from '../overlay.js';
 import { createAvatarAnimator } from '../animation.js';
-import type { Articulation, AvatarState, Character } from '../shared.js';
+import type { Articulation, AvatarState, Character, MotionEffect } from '../shared.js';
+import { addMotionChoices, defaultMotion } from '../character-motions.js';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
 async function fixture() {
@@ -23,12 +24,89 @@ async function fixture() {
   return { root, store, server, origin, token: library.token, character: library.characters[0], cleanup: async () => { await server.stop(); await fs.rm(root, { recursive: true, force: true }); } };
 }
 function message(ws: WebSocket): Promise<any> { return new Promise((resolve, reject) => { const timer = setTimeout(() => { ws.removeListener('message', received); reject(new Error('WebSocket message timeout')); }, 2500); const received = (data: unknown) => { clearTimeout(timer); resolve(JSON.parse(String(data))); }; ws.once('message', received); }); }
+
+test('on-air commands validate per-direction availability, broadcast requested variants and retain saved defaults', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const [gait] = await f.store.importImageBuffers(f.character.id, [{ name: 'Gait.png', png }]);
+  const character = addMotionChoices(f.character, { enter: { walk: { ...defaultMotion('walk'), frames: [gait] }, smoke: defaultMotion('smoke') }, exit: { smoke: defaultMotion('smoke') } });
+  await f.store.saveCharacter(character);
+  const saved = f.store.snapshot();
+  const ws = new WebSocket(`${f.origin.replace('http:', 'ws:')}/events?token=${f.token}&characterId=${character.id}`, { origin: f.origin });
+  t.after(() => ws.terminate()); await message(ws);
+  let pending = message(ws);
+  assert.deepEqual(f.server.setPresence(character.id, true, 'smoke'), { visible: true, sequence: 1, effect: 'smoke' });
+  assert.deepEqual((await pending).state.presence, { visible: true, sequence: 1, effect: 'smoke' });
+  for (const [visible, effect] of [[false, 'walk'], [true, 'fall-jump'], [false, 'fall-jump'], [true, 'dance'], [true, null]] as const) {
+    assert.throws(() => f.server.setPresence(character.id, visible, effect as MotionEffect), /does not have/);
+  }
+  pending = message(ws);
+  f.server.publish({ characterId: character.id, level: .5, db: -20, running: true, speaking: true, presence: { visible: false, sequence: 100, effect: 'fall-jump' } });
+  assert.deepEqual((await pending).state.presence, { visible: true, sequence: 1, effect: 'smoke' });
+  pending = message(ws); f.server.setPresence(character.id, false, 'smoke');
+  assert.deepEqual((await pending).state.presence, { visible: false, sequence: 2, effect: 'smoke' });
+  pending = message(ws); f.server.setPresence(character.id, true);
+  assert.deepEqual((await pending).state.presence, { visible: true, sequence: 3 });
+  assert.deepEqual(f.store.snapshot(), saved);
+});
 test('authenticated OBS source is transparent and serves only managed image assets', async t => {
   const f = await fixture(); t.after(f.cleanup); const url = `${f.origin}/overlay/${f.character.id}?token=${f.token}`;
   assert.equal((await fetch(url.replace(f.token, 'wrong'))).status, 403); assert.equal((await fetch(url, { headers: { Origin: 'https://untrusted.example' } })).status, 403);
   const response = await fetch(url); const html = await response.text(); assert.equal(response.status, 200); assert.match(response.headers.get('content-security-policy')!, /default-src 'none'/); assert.match(response.headers.get('permissions-policy')!, /microphone=\(\)/); assert.match(html, /background:transparent/); assert.match(html, /createAvatarAnimator/); assert.match(html, /img.decode\(\)/); assert.doesNotMatch(html, /getUserMedia|<audio/);
   const asset = await fetch(`${f.origin}/assets/${f.character.id}/${f.character.closed[0].file}?token=${f.token}`); assert.equal(asset.status, 200); assert.equal(asset.headers.get('content-type'), 'image/png'); assert.deepEqual(Buffer.from(await asset.arrayBuffer()), png);
   assert.equal((await fetch(`${f.origin}/assets/${f.character.id}/library.json?token=${f.token}`)).status, 404); assert.equal((await fetch(url, { method: 'POST' })).status, 405);
+});
+
+test('sound assets require authorization, allow local studio playback, and support bounded byte ranges', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const wav = await fs.readFile(new URL('../../sounds/puff_of_smoke.wav', import.meta.url));
+  const sound = await f.store.importSoundBuffer(f.character.id, 'Puff.wav', wav);
+  await f.store.saveCharacter({ ...f.character, motionSounds: { smoke: sound } });
+  const url = `${f.origin}/assets/${f.character.id}/${sound.file}?token=${f.token}`;
+  const response = await fetch(url); assert.equal(response.status, 200); assert.equal(response.headers.get('content-type'), 'audio/wav');
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), wav);
+  assert.equal((await fetch(url.replace(f.token, 'wrong'))).status, 403);
+  assert.equal((await fetch(url, { headers: { Origin: 'https://foreign.example' } })).status, 403);
+  for (const origin of ['null', 'file://']) assert.equal((await fetch(url, { headers: { Origin: origin } })).headers.get('access-control-allow-origin'), origin);
+  const range = await fetch(url, { headers: { Range: 'bytes=12-31' } });
+  assert.equal(range.status, 206); assert.equal(range.headers.get('content-range'), `bytes 12-31/${wav.length}`);
+  assert.deepEqual(Buffer.from(await range.arrayBuffer()), wav.subarray(12, 32));
+  const suffix = await fetch(url, { headers: { Range: 'bytes=-8' } }); assert.deepEqual(Buffer.from(await suffix.arrayBuffer()), wav.subarray(-8));
+  assert.equal((await fetch(url, { headers: { Range: `bytes=${wav.length}-` } })).status, 416);
+  assert.equal((await fetch(url, { headers: { Range: 'bytes=3-1' } })).status, 416);
+  const head = await fetch(url, { method: 'HEAD' }); assert.equal(head.headers.get('content-length'), String(wav.length)); assert.equal((await head.text()).length, 0);
+  const overlay = await fetch(`${f.origin}/overlay/${f.character.id}?token=${f.token}`);
+  assert.match(overlay.headers.get('content-security-policy')!, /media-src 'self'/);
+});
+
+test('serialized OBS sound playback follows new animations, ignores snapshots and stops on disconnect/deletion', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const wav = await fs.readFile(new URL('../../sounds/puff_of_smoke.wav', import.meta.url));
+  const sound = await f.store.importSoundBuffer(f.character.id, 'Puff.wav', wav);
+  const clip = { frames: [], frameMs: 100, durationMs: 1000, side: 'right' as const, effect: 'smoke' as const };
+  const character = { ...f.character, motions: { enter: clip, exit: clip }, motionSounds: { smoke: sound } };
+  await f.store.saveCharacter(character); f.server.setPresence(character.id, true);
+  const html = await (await fetch(`${f.origin}/overlay/${character.id}?token=${f.token}`)).text();
+  const script = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/)![1];
+  let now = 0; let render: (time: number) => void = () => {}; let socket: any;
+  const children: any[] = []; const audio: AudioFixture[] = [];
+  const stage = { style: {}, replaceChildren: (...images: unknown[]) => { children.splice(0, children.length, ...images); } };
+  class ImageFixture { style = {}; async decode() {} }
+  class AudioFixture { currentTime = 0; paused = true; constructor(public src: string) { audio.push(this); } play() { this.paused = false; return Promise.resolve(); } pause() { this.paused = true; } }
+  vm.runInNewContext(script, {
+    document: { getElementById: () => stage }, Image: ImageFixture, Audio: AudioFixture, innerWidth: 600, innerHeight: 600,
+    location: { origin: f.origin }, performance: { now: () => now }, requestAnimationFrame: (callback: typeof render) => { render = callback; },
+    addEventListener: () => {}, clearTimeout: () => {}, setTimeout: () => 1, WebSocket: function () { socket = this; }, console, URL, Math
+  });
+  await new Promise<void>(resolve => setImmediate(resolve)); socket.onopen(); render(10); assert.equal(audio.length, 0);
+  const state = (visible: boolean, sequence: number) => ({ characterId: character.id, running: false, speaking: false, presence: { visible, sequence } });
+  const emit = (visible: boolean, sequence: number) => socket.onmessage({ data: JSON.stringify({ type: 'state', state: state(visible, sequence) }) });
+  socket.onmessage({ data: JSON.stringify({ type: 'snapshot', character, state: state(true, 1) }) });
+  now = 20; emit(false, 2); assert.equal(audio.length, 1); assert.ok(audio[0].src.includes(sound.file));
+  emit(false, 2); render(30); assert.equal(audio.length, 1);
+  now = 40; emit(true, 3); assert.equal(audio.length, 2); assert.equal(audio[0].paused, true); assert.equal(audio[0].src, audio[1].src);
+  now = 1040; render(now); assert.equal(audio[1].paused, true);
+  now = 1050; emit(false, 4); assert.equal(audio.length, 3); socket.onclose(); assert.equal(audio[2].paused, true);
+  socket.onmessage({ data: JSON.stringify({ type: 'deleted', characterId: character.id }) }); assert.equal(audio[2].paused, true);
 });
 test('requires the expected Host header to prevent DNS rebinding', async t => {
   const f = await fixture(); t.after(f.cleanup);
@@ -343,9 +421,30 @@ async function effectHarness(f: Awaited<ReturnType<typeof fixture>>, character: 
   return {
     smokeCalls, socket, children,
     at(time: number) { now = time; render(now); return children.filter(image => image.style.display === 'block'); },
-    emit(show: boolean, sequence: number) { socket.onmessage({ data: JSON.stringify({ type: 'state', state: { characterId: character.id, running: false, speaking: false, presence: { visible: show, sequence } } }) }); }
+    emit(show: boolean, sequence: number, effect?: MotionEffect) { socket.onmessage({ data: JSON.stringify({ type: 'state', state: { characterId: character.id, running: false, speaking: false, presence: { visible: show, sequence, ...(effect ? { effect } : {}) } } }) }); }
   };
 }
+
+test('actual OBS page preloads inactive gait and plays requested walking or smoke choices', async t => {
+  const f = await fixture(); t.after(f.cleanup);
+  const gait = await f.store.importImageBuffers(f.character.id, [{ name: 'Walk on.png', png }, { name: 'Walk off.png', png }]);
+  const character: Character = { ...f.character, motions: { enter: defaultMotion('smoke'), exit: defaultMotion('smoke') }, motionVariants: {
+    enter: { walk: { ...defaultMotion('walk', 'left'), frames: [gait[0]], durationMs: 1000 } },
+    exit: { walk: { ...defaultMotion('walk'), frames: [gait[1]], durationMs: 1000 } }
+  } };
+  const h = await effectHarness(f, character);
+  assert.equal(h.children.length, 4, 'both inactive gait sprites must be decoded');
+  h.at(1000); h.emit(false, 1, 'walk');
+  assert.ok(h.at(1500)[0].src.includes(gait[1].file));
+  assert.equal(h.at(2000).length, 0);
+  h.emit(true, 2, 'walk'); assert.ok(h.at(2500)[0].src.includes(gait[0].file));
+  assert.ok(h.at(3000)[0].src.includes(character.closed[0].file));
+  h.emit(false, 3, 'smoke'); assert.ok(h.at(3500)[0].src.includes(character.closed[0].file));
+  assert.ok(h.smokeCalls.includes('arc')); assert.equal(h.at(4000).length, 0);
+  h.emit(true, 4, 'smoke'); h.at(5000);
+  h.emit(false, 5); h.at(5500); assert.ok(h.smokeCalls.filter(call => call === 'arc').length > 1);
+  assert.deepEqual(f.store.snapshot().characters[0], character);
+});
 
 test('actual OBS renderer measures transparent padding and transformed art so right entrance touches the viewport edge immediately', async t => {
   const f = await fixture(); t.after(f.cleanup);

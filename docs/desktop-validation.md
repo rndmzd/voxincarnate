@@ -1,5 +1,44 @@
 # Windows desktop validation
 
+## October 17 optional animation sound effects
+
+The character builder now stores one optional WAV for each animation type:
+Walking, Smoke, and Fall / Jump. Entrance and exit share the selection for their
+type. Existing characters remain silent until a sound is selected and saved.
+The supplied `sounds/puff_of_smoke.wav` and `sounds/footsteps.wav` are available
+as presets; custom WAVs are copied into managed character storage.
+
+- `npm run check` passed strict TypeScript, **152 tests**, and the production build.
+  Sound regressions cover all three effects in both directions, stale commands,
+  reconnect baselines, interrupted playback, optional silence, playback errors,
+  WAV validation, persistence, character asset isolation, deletion/draft cleanup,
+  authenticated media serving and byte ranges.
+- `npm run pack` built the Windows directory package. Both packaged WAVs matched
+  their original source files by SHA-256.
+- The packaged executable passed `--smoke-test --motion-sound-check`. This uses
+  an isolated `.qa/motion-sound-profile` and a free loopback port, preserving the
+  normal app/profile and an already-running overlay. The test imported both
+  presets, imported a custom WAV, cancelled a subsequent picker without losing
+  that selection, saved/reloaded, and removed only the custom source fixture to
+  verify the managed copy still works.
+- Real HTMLAudioElement decoding and Web Audio probes observed nonzero samples
+  from both supplied sounds and the custom WAV. Smoke entrance and exit used
+  the same file in the studio and isolated overlay. Interruptions stopped the
+  preceding sound. On-air commands produced no duplicate studio playback;
+  No sound and loaded/refreshed overlay snapshots produced no sound replay.
+  The smoke windows were muted; this validates decoded signals, not physical
+  speaker output or an OBS recording.
+- Production editor captures at the supported 1440 and 1120 window widths showed
+  all three shared sound rows without clipping or horizontal overflow. Listen
+  changes to Stop while auditioning, and its accessible name includes its visible
+  label. Save remains in the sticky top bar.
+
+Run `npm run smoke:sounds` to reproduce the focused Electron checks. The private
+reports and screenshots are under `.qa/`. Enable **Control audio via OBS** in the
+Browser Source properties to route on-air effects through its mixer channel.
+Physical OBS recording/monitoring and clean-machine installation remain
+**NOT RUN** for this change. No release was published.
+
 ## October 16 face detection and natural speech blending
 
 Imported-image creation now detects a face with two associated eyes and a nested
@@ -357,6 +396,153 @@ artifact verification and checksums are under `.qa/windows-v032/`.
 These checks used synthetic local audio without a physical microphone or paid
 generation requests. A new live Focusrite/assistant/OBS session and clean-machine
 installation were not run. Packages remain unsigned and have no automatic updater.
+
+## October 17 selectable entrance and exit animations
+
+The source builder now supports multiple entrance and exit choices from the three
+existing effects: walk on/off, jump in/out, and a puff of smoke. New character kits
+retain every selected choice. Saved characters can generate only their missing
+choices without rebuilding speech artwork. Active choices remain compatible with
+the existing studio and OBS playback; switching effects retains each clip's
+artwork, direction, alignment, and timing. Inactive gait assets are validated and
+retained through save/reload. Sound selections are preserved.
+
+`npm run check` passed TypeScript, **157 tests**, and the production build. The
+real Electron renderer/preload/IPC character suite passed with deterministic local
+API fixtures and the existing synthetic speech fixture. It verified:
+
+- Creation with all three entrance and all three exit types, plus rejection of an
+  empty entrance selection and persistence of all six choices.
+- Adding local effects with no image API requests, and generating just one missing
+  walk without requesting the unselected direction.
+- Adding four missing choices to an existing character with exactly two walking
+  requests, no new speech/detection requests, and preservation of the current clips
+  and all saved speech images until an explicit Save changes.
+- Rejection of already available choices, rollback when the second walking request
+  fails, cancellation of an active request, and removal of discarded staged images
+  while retaining saved artwork.
+- Choosing the added walking clips, saving, and restoring all choices after reload.
+- Rendered creation and missing-animation controls at 1440 × 960 and 1120 × 740,
+  with no horizontal overflow. The UI detector reported no findings.
+
+The report is `.qa/smoke.json`, under `characterCreation`; screenshots include
+`.qa/character-creator-animations-minimum.png` and
+`.qa/character-missing-animations-desktop.png`. These checks made no paid API calls
+and used no physical microphone. Live generated-art quality and physical OBS
+validation were not rerun. Distribution packages were not rebuilt for this feature.
+
+## October 17 on-air animation choices
+
+The on-air section now has separate Entrance and Exit buttons for all three core
+effects. Each button is enabled only when its direction and effect exist for the
+selected character. Characters with no animations retain the section with six
+disabled buttons and guidance to add animations; unsaved drafts and edits also
+disable on-air controls. The trusted desktop command checks saved availability
+before changing live presence. Commands carry their requested effect through the
+shared studio/OBS animator, use the associated saved clip and sound, and preserve
+configured default clips. OBS preloads inactive gait artwork for immediate playback.
+
+TypeScript, the production build, and **160 tests** passed. Coverage includes all
+three explicit effects in both directions, the serialized animation factory, real
+overlay-page rendering of inactive gait choices, command validation, and ignored
+renderer attempts to spoof presence. The UI detector reported no findings.
+
+`node node_modules/electron/cli.js . --smoke-test --motion-sound-check` passed the
+actual renderer/preload/IPC flow and a real Electron overlay browser in the isolated
+`.qa/motion-sound-profile` profile. It verified a character with walking and smoke:
+four enabled buttons, two disabled jump buttons, correct walking sprite selection,
+matching footsteps/smoke audio without studio duplication, and preserved saved
+defaults. It also checked unsaved edits, different entrance/exit availability,
+no-animation characters, unavailable-command rejection, and snapshot sound handling.
+
+The report is `.qa/motion-sounds.json`, including `onAirAnimations`. Rendered controls
+were inspected at 1440 and 1120 pixels wide in `.qa/on-air-animations-1440.png` and
+`.qa/on-air-animations-1120.png`, with no horizontal overflow. These checks made no
+paid API requests and used no physical microphone or OBS application. Distribution
+packages were not rebuilt for this change.
+
+## Local controls, Stream Deck, and global hotkeys (October 17, 2026)
+
+`npm run check` passed strict TypeScript, all **168 tests**, the production app
+build, and the official Elgato CLI's plugin validation/package step. Control
+regressions cover command allowlists, state guards, independent credential
+persistence, corrupted optional settings, authenticated HTTP/WebSocket access,
+browser-origin/Host rejection, body limits, hotkey conflict rollback, control-port
+collision rollback, interruptible startup, and plugin reconnect without replay.
+
+`npm run smoke:controls` passed the actual Electron renderer/preload/main flow in
+`.qa/control-profile`. It verified direct capture and background assistant-tab
+capture using a fake microphone and local tone, waited for assistant microphone
+discovery, exercised all six explicit animation effects, preserved saved motion
+defaults, rejected unsaved changes and refresh during capture, and confirmed
+native global-hotkey registration, suspension while editing, resumption on close,
+and duplicate-save recovery. Status does not expose either connection token.
+
+Settings were rendered and inspected at 1440 and 1120 pixels wide, including a
+conflict saved while scrolled to the bottom. Errors and Save remain visible in the
+sticky header. The Stream Deck property inspector was rendered at 360×650 in
+connected motion and disconnected states. Captures include `.qa/controls-1440.png`,
+`.qa/controls-1120.png`, `.qa/controls-hotkeys-1120.png`,
+`.qa/controls-conflict-1120.png`, and `.qa/streamdeck-inspector-*.png`. A separate
+finish review confirmed its requested fixes resolved. The UI detector returned no
+findings in degraded regex mode; computed-style/contrast validation was not
+provided by that detector.
+
+`npm run smoke:streamdeck` passed the built official-SDK plugin against a simulated
+Stream Deck WebSocket host and an actual localhost API server. It checked SDK
+registration, pairing/global settings, capture key feedback from app state,
+specific-character animation targeting, unsaved guards, disconnect feedback,
+reconnection without replay, and exclusion of credentials from individual key
+settings. Its report is `.qa/streamdeck.json`.
+
+A separate Windows x64 directory package was built in
+`.qa/control-release/win-unpacked` without replacing existing release artifacts.
+Running its `Voxincarnate.exe --smoke-test --controls-check` passed the same Electron
+checks, including the bundled plugin installer and inspector assets. Its report is
+`.qa/controls-packaged.json`; the source-run report is `.qa/controls.json`.
+The embedded plugin matches the standalone `.streamDeckPlugin` artifact, and the
+application archive excludes control credentials, QA profiles, and plugin logs.
+
+These runs made no paid generation requests, did not install the plugin into the
+user's Stream Deck application, and did not publish a release. Physical Stream
+Deck presses, real microphone/hotkey injection, live assistant calls, OBS behavior,
+and clean-machine installation for these controls remain **NOT RUN**.
+
+## Version 0.4.0 release checks (October 17, 2026)
+
+The release includes the motion choices, missing-animation generator, WAV effects,
+on-air controls, local API, Stream Deck plugin, global hotkeys, and placement of
+the entrance/exit buttons above **Take it to OBS**. The UI now shows its busy state
+immediately while a clicked control is dispatched to the main process; the shared
+command handler continues to enforce readiness and concurrency checks.
+
+Strict TypeScript, all **168 automated tests**, the production build, and official
+Elgato plugin validation/package passed. The built plugin passed its simulated
+host checks. Windows x64 NSIS and portable ZIP assets are built in
+`release/v0.4.0`, with the standalone plugin and SHA-256 checksums alongside them.
+
+The packaged control smoke passed background capture, microphone discovery, all
+six animation actions, hotkey registration/conflict recovery, and settings and
+property-inspector rendering. The packaged motion/sound smoke passed WAV imports,
+persistence, studio and overlay playback, interruption, no snapshot replay,
+per-direction animation availability, saved-default preservation, and the updated
+1440/1120 layouts.
+
+For the full lip-sync and character suite, the release check uses the existing
+prerecorded synthetic speech fixture with `--speech-fixture-check` and
+`--use-file-for-fake-audio-capture=<absolute path to .qa/lip-sync-speech.wav>`.
+This supplies speech to the classifier rather than treating a constant fake tone
+as a spoken input. The check produced 241 timestamped articulation updates and
+eight dominant mouth poses during its eight-second observation, and passed the
+fixture-only creation, missing-animation, failure, cancellation, and preservation
+checks. It is execution/variation evidence, not a phoneme accuracy measurement.
+
+Package verification compares compiled files, the model/notices, sounds, and
+bundled plugin with their source build; the installer and portable ZIP are checked
+against the tested executable and application archive. Private QA profiles,
+connection settings, and plugin logs are excluded. No paid generation, physical
+Stream Deck/microphone session, live assistant/OBS session, or clean-machine
+installation is claimed for this release.
 
 ## Not run
 

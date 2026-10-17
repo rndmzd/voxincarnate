@@ -1,4 +1,4 @@
-import type { AvatarState, Character, CharacterPresence, MotionClip, Sprite, Viseme } from './shared';
+import type { AvatarState, Character, CharacterPresence, MotionClip, MotionEffect, Sprite, Viseme } from './shared';
 
 /** Shared by the studio and the isolated OBS page; keep the factory self-contained. */
 export function createAvatarAnimator() {
@@ -85,6 +85,7 @@ export function createAvatarAnimator() {
 }
 
 export interface MotionBounds { left: number; right: number; top: number; bottom: number }
+export interface MotionStart { sequence: number; effect: MotionEffect; durationMs: number }
 export interface MotionGeometry {
   /** Visible viewport dimensions, in character canvas units. */
   width: number; height: number;
@@ -139,7 +140,7 @@ export function createMotionAnimator() {
   };
 
   return {
-    update(next: Character, input: CharacterPresence | undefined, now: number, viewport?: MotionGeometry) {
+    update(next: Character, input: CharacterPresence | undefined, now: number, viewport?: MotionGeometry): MotionStart | undefined {
       const changedCharacter = character?.id !== next.id;
       if (changedCharacter) {
         presence = { visible: true, sequence: 0 };
@@ -179,7 +180,10 @@ export function createMotionAnimator() {
       const current = this.frame(now);
       const interrupted = !!motion;
       presence = { ...input };
-      const clip = next.motions?.[input.visible ? 'enter' : 'exit'];
+      const kind = input.visible ? 'enter' : 'exit';
+      const selected = next.motions?.[kind];
+      let clip = selected;
+      if (input.effect !== undefined && (!selected || (selected.effect ?? 'walk') !== input.effect)) clip = next.motionVariants?.[kind]?.[input.effect];
       if (!clip || ((clip.effect ?? 'walk') === 'walk' && !clip.frames.length) || !Number.isFinite(clip.durationMs) || clip.durationMs <= 0) {
         motion = undefined;
         visible = input.visible;
@@ -200,6 +204,7 @@ export function createMotionAnimator() {
       motion = { clip, started: now, duration, fromX, fromY, toX, toY, entering: input.visible, flipX };
       visible = true;
       offsetX = fromX; offsetY = fromY;
+      return { sequence: input.sequence, effect, durationMs: duration };
     },
     frame(now: number): { sprite?: Sprite; offsetX: number; offsetY: number; opacity: number; scale: number; flipX: boolean; visible: boolean; active: boolean; smoke: number } {
       if (motion) {
