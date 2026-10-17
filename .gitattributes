@@ -1,0 +1,4 @@
+# Keep pinned upstream assets byte-for-byte across Windows checkouts.
+desktop/vendor/headaudio/LICENSE -text
+desktop/vendor/headaudio/headworklet.min.mjs -text
+desktop/vendor/headaudio/model-en-mixed.bin -text

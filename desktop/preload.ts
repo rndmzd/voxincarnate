@@ -1,9 +1,23 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { DesktopApi, BrowserStatus } from './shared';
+import type { DesktopApi, BrowserStatus, GenerationProgress } from './shared';
 const api: DesktopApi = {
   bootstrap: () => ipcRenderer.invoke('app:bootstrap'),
   saveCharacter: character => ipcRenderer.invoke('character:save', character),
+  deleteCharacter: id => ipcRenderer.invoke('character:delete', id),
+  createVisemeDemo: () => ipcRenderer.invoke('character:demo'),
   importImages: (id, pose) => ipcRenderer.invoke('character:import', id, pose),
+  generationAvailability: () => ipcRenderer.invoke('generation:availability'),
+  chooseCharacterSource: () => ipcRenderer.invoke('generation:source'),
+  detectCharacterFace: sourceId => ipcRenderer.invoke('generation:detect-face', sourceId),
+  generateCharacter: request => ipcRenderer.invoke('generation:create', request),
+  discardCharacterDraft: id => ipcRenderer.invoke('generation:discard', id),
+  cancelGeneration: () => ipcRenderer.invoke('generation:cancel'),
+  onGenerationProgress: listener => {
+    const receive = (_: unknown, progress: GenerationProgress) => listener(progress);
+    ipcRenderer.on('generation:progress', receive);
+    return () => ipcRenderer.removeListener('generation:progress', receive);
+  },
+  setCharacterPresence: (id, visible) => ipcRenderer.invoke('character:presence', id, visible),
   saveSettings: settings => ipcRenderer.invoke('settings:save', settings),
   publish: state => ipcRenderer.send('audio:state', state),
   browser: (action, value) => ipcRenderer.invoke('browser:action', action, value),

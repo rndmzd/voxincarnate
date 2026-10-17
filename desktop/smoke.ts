@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createServer } from 'node:http';
 import type { Bootstrap } from './shared';
+import { runVisemeUiSmoke } from './viseme-ui-smoke';
 
 interface SmokeOptions {
   window: BrowserWindow;
@@ -44,6 +45,12 @@ export async function runSmoke(options: SmokeOptions): Promise<Record<string, un
   let assistant: WebContentsView | undefined;
   let unrelated: BrowserWindow | undefined;
   const cleanupListeners: (() => void)[] = [];
+  const animationStates: Array<{ articulation?: { weights: Record<string, number>; audioTimeMs: number }; lipSyncError?: string }> = [];
+  const animationListener = (event: Electron.IpcMainEvent, value: typeof animationStates[number]) => {
+    if (event.sender === studio.webContents && value && animationStates.length < 500) animationStates.push(value);
+  };
+  ipcMain.on('audio:state', animationListener);
+  cleanupListeners.push(() => ipcMain.removeListener('audio:state', animationListener));
   const listen = (wc: Electron.WebContents, source: string) => {
     const consoleListener = (event: unknown, _level?: number, message?: string) => {
       const text = typeof message === 'string' ? message :
@@ -77,7 +84,10 @@ export async function runSmoke(options: SmokeOptions): Promise<Record<string, un
     await evaluate(`(()=>{const select=document.querySelector('#audio-input');if(!select || select.disabled)throw new Error('Input picker unavailable');Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select,${JSON.stringify(value)});select.dispatchEvent(new Event('change',{bubbles:true}))})()`);
   };
   const step = async (name: string, operation: () => Promise<unknown>) => {
-    try { result[name] = await operation(); }
+    try {
+      result[name] = await operation();
+      if (result[name] && typeof result[name] === 'object' && (result[name] as { ok?: boolean }).ok === false) result.ok = false;
+    }
     catch (error) {
       result.ok = false;
       result[name] = { ...(result[name] && typeof result[name] === 'object' ? result[name] as Record<string, unknown> : {}),
@@ -115,9 +125,24 @@ export async function runSmoke(options: SmokeOptions): Promise<Record<string, un
       await waitFor(`document.querySelector('.transport')?.textContent.includes('Stop audio')`, 'Fake microphone capture did not start.');
       const maximumDb = await evaluate<number>(`(async()=>{let maximum=-120;for(let index=0;index<80;index++){maximum=Math.max(maximum,document.querySelector('meter').value);if(maximum>-60)return maximum;await new Promise(resolve=>setTimeout(resolve,75))}return maximum})()`);
       if (maximumDb <= -60) throw new Error(`Fake microphone did not reach the actual UI meter (maximum ${maximumDb} dB).`);
+      const deadline = Date.now() + 4000;
+      while (!animationStates.some(state => (state.articulation?.audioTimeMs ?? 0) > 0) && Date.now() < deadline) await delay(60);
+      const articulated = animationStates.filter(state => (state.articulation?.audioTimeMs ?? 0) > 0);
+      if (!articulated.length) throw new Error('The bundled local analyzer did not publish timestamped articulation through production IPC.');
+      let speechFixture: Record<string, unknown> | undefined;
+      if (process.argv.includes('--speech-fixture-check')) {
+        await delay(8000);
+        const speechStates = animationStates.filter(state => (state.articulation?.audioTimeMs ?? 0) > 0);
+        const dominant = speechStates.map(state => Object.entries(state.articulation!.weights).sort((a, b) => b[1] - a[1])[0]?.[0]).filter(Boolean);
+        const mouths = [...new Set(dominant)];
+        if (mouths.filter(pose => pose !== 'X').length < 4) throw new Error(`Speech fixture produced too few distinct mouth shapes: ${mouths.join(', ')}.`);
+        speechFixture = { ok: true, states: speechStates.length, dominantMouths: mouths, durationMs: 8000,
+          scope: 'Prerecorded synthetic voice through Chromium fake input; not a phoneme accuracy score.' };
+      }
       await click('.transport');
       await waitFor(`document.querySelector('.transport')?.textContent.includes('Start audio') && !document.querySelector('.transport')?.disabled`, 'Direct capture did not stop.');
-      return { ok: true, fakeDeviceId: deviceId, maximumDb };
+      return { ok: true, fakeDeviceId: deviceId, maximumDb, articulationStates: articulated.length,
+        observedMouths: [...new Set(articulated.flatMap(state => Object.keys(state.articulation!.weights)))], ...(speechFixture ? { speechFixture } : {}) };
     });
 
     // Reset through the same native picker/save controls, leaving repeat runs in
@@ -142,6 +167,8 @@ export async function runSmoke(options: SmokeOptions): Promise<Record<string, un
     }
 
     studio.setSize(1440, 960);
+
+    await step('visemeUi', () => runVisemeUiSmoke(studio, outputDir));
     await evaluate(`window.scrollTo(0,0)`);
     result.desktopScreenshot = await screenshot('desktop.png');
     await step('builderUi', async () => {
